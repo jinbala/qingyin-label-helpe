@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="blue" x1="16" y1="8" x2="112" y2="124" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#397CF4"/>
+      <stop offset="1" stop-color="#1947B9"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="url(#blue)"/>
+  <path d="M35 23h40l24 24v47a10 10 0 0 1-10 10H35a10 10 0 0 1-10-10V33a10 10 0 0 1 10-10Z" fill="#FFFFFF"/>
+  <path d="M75 23v16a8 8 0 0 0 8 8h16Z" fill="#C1D9FF"/>
+  <rect x="38" y="42" width="23" height="5" rx="2.5" fill="#9BBCF5"/>
+  <g fill="#2258CA">
+    <rect x="38" y="61" width="5" height="25"/>
+    <rect x="47" y="61" width="3" height="25"/>
+    <rect x="54" y="61" width="6" height="25"/>
+    <rect x="64" y="61" width="3" height="25"/>
+    <rect x="71" y="61" width="5" height="25"/>
+    <rect x="80" y="61" width="4" height="25"/>
+  </g>
+  <circle cx="94" cy="95" r="20" fill="#16B8B1"/>
+  <path d="m84 95 7 7 13-15" fill="none" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

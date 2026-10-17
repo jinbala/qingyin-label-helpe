@@ -1,0 +1,89 @@
+{
+  "manifest_version": 3,
+  "name": "轻印标签助手",
+  "short_name": "轻印标签",
+  "description": "用于 TEMU 商品标签批量生成、模板管理和 PDF 打印预览的本地扩展。",
+  "version": "1.4.3",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://seller.kuajingmaihuo.com/*",
+    "https://agentseller.temu.com/*",
+    "https://seller.temu.com/*",
+    "https://agentseller-us.temu.com/*",
+    "https://agentseller-eu.temu.com/*"
+  ],
+  "background": {
+    "service_worker": "src/printing/background.mjs",
+    "type": "module"
+  },
+  "icons": {
+    "16": "assets/icons/icon-16.png",
+    "32": "assets/icons/icon-32.png",
+    "48": "assets/icons/icon-48.png",
+    "128": "assets/icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "轻印标签助手",
+    "default_popup": "src/ui/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon-16.png",
+      "32": "assets/icons/icon-32.png",
+      "48": "assets/icons/icon-48.png",
+      "128": "assets/icons/icon-128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://seller.kuajingmaihuo.com/*",
+        "https://agentseller.temu.com/*",
+        "https://seller.temu.com/*",
+        "https://agentseller-us.temu.com/*",
+        "https://agentseller-eu.temu.com/*"
+      ],
+      "js": [
+        "src/integration/page-api.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://seller.kuajingmaihuo.com/*",
+        "https://agentseller.temu.com/*",
+        "https://seller.temu.com/*",
+        "https://agentseller-us.temu.com/*",
+        "https://agentseller-eu.temu.com/*"
+      ],
+      "js": [
+        "vendor/JsBarcode.all.min.js",
+        "vendor/pdf-lib.min.js",
+        "src/integration/loader.js"
+      ],
+      "run_at": "document_idle",
+      "world": "ISOLATED"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "matches": [
+        "https://seller.kuajingmaihuo.com/*",
+        "https://agentseller.temu.com/*",
+        "https://seller.temu.com/*",
+        "https://agentseller-us.temu.com/*",
+        "https://agentseller-eu.temu.com/*"
+      ],
+      "resources": [
+        "src/core/*",
+        "src/integration/*",
+        "src/ui/*",
+        "src/printing/render.mjs",
+        "src/printing/design-svg.mjs",
+        "assets/icons/*.png"
+      ]
+    }
+  ]
+}

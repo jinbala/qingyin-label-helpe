@@ -1,0 +1,4 @@
+node_modules/
+/dist/
+/docs/validation/*
+!/docs/validation/验证说明.md
