@@ -8,6 +8,7 @@ export function createSettingsClient(request) {
   let baseline, pending = Promise.resolve();
   return {
     async loadSettings() { const settings = await request('load'); baseline = structuredClone(settings); return settings; },
+    readSettings() { return pending.catch(() => {}).then(() => request('load')); },
     saveSettings(settings) {
       const snapshot = structuredClone(settings);
       const job = pending.catch(() => {}).then(async () => {

@@ -17,7 +17,7 @@ const idsToItems = ids => ids.map((id, index) => ({
 
 const services = {
   demo: true, dataOrigin: 'https://seller.kuajingmaihuo.com',
-  getMallId: async () => '1001', loadSettings: persistence.loadSettings, saveSettings: persistence.saveSettings,
+  getMallId: async () => '1001', loadSettings: persistence.loadSettings, readSettings: persistence.readSettings, saveSettings: persistence.saveSettings,
   async request(config) {
     const mode = choose('fixture-mode');
     await new Promise(resolve => setTimeout(resolve, mode === 'slow' ? 2000 : 30));

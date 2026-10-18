@@ -1,12 +1,14 @@
 import { fetchLabels, makeJobs, sortRecords, splitIds } from '../core/core.mjs';
 import { defaultTemplates, localTemplate, SETTINGS_SCHEMA } from '../core/templates.mjs';
-import { createLabelRenderer, generatePdf, toMonochrome } from '../printing/render.mjs';
+import { createLabelRenderer, generatePdf } from '../printing/render.mjs';
 import { pageType, readSelected, trackSelections } from '../integration/dom.mjs';
 import { mountLayoutEditor } from './layout-editor.mjs';
 import { normalizeLayout } from '../core/layout.mjs';
 import { createPreviewScheduler } from './preview-scheduler.mjs';
 import { mountPreviewDialog } from './preview-dialog.mjs';
 import { mountTemplateDesigner } from './template-designer.mjs';
+import { previewDpi, previewViewport } from './preview-quality.mjs';
+import { createTemplateBackup, mergeTemplateBackup } from '../core/template-backup.mjs';
 
 const SAMPLE = [
   { productSkuId: '9000000000001', productSkcId: '800000000001', labelCode: '53711398047', skuSpec: 'Black-L', skcSpec: 'Cotton', quantity: 2, sourceId: 'DEMO001', purchaseTime: 1729000000000 },
@@ -44,7 +46,8 @@ export async function mountLabelApp(services, stylesheet) {
             <h2 class="section-title">打印明细<small id="count">尚未读取商品</small></h2>
             <div class="sort-row"><select id="sort" aria-label="打印顺序"><option value="table">页面 / 输入顺序</option><option value="selected">勾选顺序</option><option value="skc">SKC ID 升序</option><option value="time">备货单创建时间：新到旧</option></select><label><input id="separators" type="checkbox">不同 SKU 之间添加提示页</label><button id="clear">清空</button></div>
             <div class="table-scroll"><table><thead><tr><th>SKC / SKU</th><th>规格</th><th>条码</th><th>打印数量</th><th></th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">读取数据后，在这里核对规格与数量。</div></div>
-            <div class="template-toolbar"><strong>标签模板</strong><button id="new-template">新建模板</button><button id="import-template">导入 JSON</button><input id="template-file" type="file" accept=".json,application/json" hidden></div>
+            <div class="template-toolbar"><strong>标签模板</strong><button id="new-template">新建模板</button><button id="import-template">导入 JSON</button><input id="template-file" type="file" accept=".json,application/json" hidden><button id="backup-templates">备份全部模板</button><button id="restore-templates">导入备份</button><input id="backup-file" type="file" accept=".json,application/json" hidden></div>
+            <p class="hint">更新请覆盖原目录后重新加载。换目录或移除扩展前，请先“备份全部模板”。</p>
             <div class="template-grid" id="templates"></div>
             <div class="actions" style="margin-top:10px"><button id="edit-template">编辑模板</button><button id="export-template">导出模板</button><button id="delete-template">删除本地模板</button></div>
           </div><aside class="preview"><h2 class="section-title">首张标签预览</h2><div class="preview-box" id="preview"><span class="hint">读取商品并选择模板后显示</span></div><p class="hint" id="preview-caption"></p><label class="field"><span>条码区域产地（留空不显示）</span><input id="origin" value="China" maxlength="80"></label><button id="open-layout-preview" class="open-layout-preview" type="button">打开大图调整</button><div class="layout-home" hidden><div id="layout-editor"></div></div><p class="hint">最终输出为黑白标签。打印时使用标签纸尺寸和 100% 缩放。</p></aside></div>
@@ -63,11 +66,21 @@ export async function mountLabelApp(services, stylesheet) {
   const sorted = () => sortRecords(state.records, $('#sort').value);
   const notice = (text, level = '') => { $('#notice').textContent = text; $('#notice').className = `notice ${level}`; };
   const save = (overrides = {}) => services.saveSettings({ schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts, ...overrides });
+  const savedSettings = async () => {
+    const settings = services.readSettings ? await services.readSettings() : undefined;
+    return settings?.templates?.length ? settings : { schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts };
+  };
+  const downloadJson = (value, filename) => {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' }));
+    const anchor = element('a'); anchor.href = url; anchor.download = filename; host.append(anchor); anchor.click(); anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+  };
   let previewRendererCache;
   const previewDialog = mountPreviewDialog({
     root, preview: $('#preview'), trigger: $('#open-layout-preview'), controls: $('#layout-editor'), mainPanel: $('.panel'),
     onOpen: () => { void refreshPreview(); },
     onClose: () => { layoutEditor.finishDrag(); void refreshPreview(); },
+    onResize: () => { layoutEditor.finishDrag(); void refreshPreview(); },
   });
   const previewScheduler = createPreviewScheduler(renderPreview);
   const layoutEditor = mountLayoutEditor({
@@ -174,15 +187,12 @@ export async function mountLabelApp(services, stylesheet) {
       }
       const renderer = await previewRendererCache.renderer;
       signal.throwIfAborted(); if (!isCurrent()) return;
-      const record = sorted()[0], dpi = Math.min(previewDialog.isOpen() ? 180 : 96, 1200 * 25.4 / Math.max(template.width, template.height));
+      const viewport = previewDialog.isOpen() ? previewDialog.getViewport() : previewViewport($('#preview'), 260, 300);
+      const record = sorted()[0], dpi = previewDpi(template, viewport, window.devicePixelRatio || 1);
       const canvas = await renderer(record, { dpi, layout: template.layout, signal });
       if (!isCurrent()) { canvas.width = 1; return; }
-      const mono = toMonochrome(canvas), context = canvas.getContext('2d'), pixels = context.createImageData(canvas.width, canvas.height), stride = Math.ceil(canvas.width / 8);
-      for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
-        const value = mono.packed[y * stride + (x >> 3)] & (128 >> (x & 7)) ? 255 : 0, offset = (y * canvas.width + x) * 4;
-        pixels.data[offset] = pixels.data[offset + 1] = pixels.data[offset + 2] = value; pixels.data[offset + 3] = 255;
-      }
-      context.putImageData(pixels, 0, 0); canvas.setAttribute('aria-label', '首张标签黑白预览'); $('#preview').replaceChildren(canvas);
+      // Keep antialiased edges for the screen; thresholding is only for print.
+      canvas.style.filter = 'grayscale(1)'; canvas.setAttribute('aria-label', '首张标签灰度预览'); $('#preview').replaceChildren(canvas);
       previewDialog.paint(canvas);
       $('#preview-caption').textContent = `${template.width} × ${template.height} mm · SKU ${record.productSkuId} · 点击放大调整`;
     } catch (error) {
@@ -255,6 +265,22 @@ export async function mountLabelApp(services, stylesheet) {
     $('#origin').value = chosen()?.origin ?? 'China'; renderTemplates(); await refreshPreview();
   });
   on('#import-template', () => $('#template-file').click());
+  on('#backup-templates', async () => {
+    const backup = createTemplateBackup(await savedSettings());
+    downloadJson(backup, `轻印模板备份-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+    notice(`已发起备份下载：${backup.settings.templates.length} 个模板及已保存的位置。请保留下载的 JSON 文件，换目录或重装后可用“导入备份”恢复。`);
+  });
+  on('#restore-templates', () => $('#backup-file').click());
+  on('#backup-file', async () => {
+    const input = $('#backup-file'), file = input.files[0]; input.value = '';
+    if (!file) return;
+    if (file.size > 16 * 1024 * 1024) throw new Error('模板备份 JSON 不能超过 16 MB。');
+    const result = mergeTemplateBackup(await savedSettings(), JSON.parse(await file.text()));
+    await save(result.settings);
+    state.local = result.settings.templates; state.selected = result.settings.selected; state.layouts = result.settings.layouts;
+    previewRendererCache = undefined; $('#origin').value = chosen()?.origin ?? 'China'; renderTemplates(); await refreshPreview();
+    notice(`备份导入完成：新增 ${result.added} 个模板，跳过 ${result.skipped} 个相同模板。已有模板未被覆盖。`);
+  }, 'change');
   on('#template-file', async () => {
     const input = $('#template-file'), file = input.files[0]; input.value = '';
     if (!file) return;
@@ -268,9 +294,7 @@ export async function mountLabelApp(services, stylesheet) {
   }, 'change');
   on('#export-template', async () => {
     const template = await resolvedTemplate();
-    const url = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: 'application/json' }));
-    const anchor = element('a'); anchor.href = url; anchor.download = `${template.name.replace(/[\\/:*?"<>|]/g, '_')}.json`; host.append(anchor); anchor.click(); anchor.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    downloadJson(template, `${template.name.replace(/[\\/:*?"<>|]/g, '_')}.json`);
   });
   on('#generate', async () => {
     if (state.busy || $('#generate').disabled) return;

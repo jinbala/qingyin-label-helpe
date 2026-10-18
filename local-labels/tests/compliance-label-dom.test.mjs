@@ -232,7 +232,8 @@ test('界面可读取勾选、修改数量、生成 PDF；失败和切换店铺�
   const images = openedPdf.getPage(0).node.Resources().lookup(PDFLib.PDFName.of('XObject'), PDFLib.PDFDict);
   const image = images.lookup(images.keys()[0], PDFLib.PDFRawStream);
   const printed = { width: image.dict.get(PDFLib.PDFName.of('Width')).asNumber(), height: image.dict.get(PDFLib.PDFName.of('Height')).asNumber(), packed: inflateSync(image.contents) };
-  assert(printed.width > expected.width, '打印保持 300 DPI，交互预览使用较小图像');
+  assert.equal(printed.width, Math.round(70 / 25.4 * 300), '打印仍保持所选 300 DPI，不受大图预览分辨率影响');
+  assert(expected.width > 70 / 25.4 * 180, '大图不能继续使用 180 DPI 的低分辨率位图');
   const bounds = ({ width, height, packed }) => {
     const stride = Math.ceil(width / 8); let left = width, top = height, right = 0, bottom = 0;
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (!(packed[y * stride + (x >> 3)] & (128 >> (x & 7)))) { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); }

@@ -3,7 +3,7 @@
   "name": "轻印标签助手",
   "short_name": "轻印标签",
   "description": "用于 TEMU 商品标签批量生成、模板管理和 PDF 打印预览的本地扩展。",
-  "version": "1.4.3",
+  "version": "1.4.5",
   "permissions": [
     "storage",
     "activeTab"
