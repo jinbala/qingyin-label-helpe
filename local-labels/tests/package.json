@@ -2,7 +2,7 @@
   "name": "local-compliance-label-tests",
   "private": true,
   "scripts": {
-    "test": "node --test compliance-label.test.mjs compliance-label-dom.test.mjs page-api.test.mjs standalone.test.mjs layout.test.mjs preview-scheduler.test.mjs template-designer.test.mjs barcode-margin.test.mjs settings-store.test.mjs"
+    "test": "node --test compliance-label.test.mjs compliance-label-dom.test.mjs page-api.test.mjs standalone.test.mjs layout.test.mjs preview-scheduler.test.mjs template-designer.test.mjs barcode-margin.test.mjs settings-store.test.mjs preview-quality.test.mjs template-backup.test.mjs"
   },
   "devDependencies": {
     "@napi-rs/canvas": "0.1.80",

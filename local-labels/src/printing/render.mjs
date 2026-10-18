@@ -76,11 +76,6 @@ export function barcodeSvg(record, origin, JsBarcode = globalThis.JsBarcode, { l
     ${text(leftBottom, 14, 175, 'lb', 320)}${text(rightBottom, 686, 175, 'rb', 300, 'end')}</svg>`;
 }
 
-function adjustmentPadding(layout, template, unitMm) {
-  return ['skc', 'color', 'size', 'sku', 'origin', 'bars', 'frame'].some(key => !isDefaultAdjustment(layout.parts[key]))
-    ? Math.ceil(Math.max(template.width, template.height) / unitMm) : 0;
-}
-
 function wrapText(context, text, maxWidth) {
   const lines = [];
   for (const paragraph of String(text).split('\n')) {
@@ -132,16 +127,16 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   const naturalWidth = Number(dimensions.getAttribute('width')), naturalHeight = Number(dimensions.getAttribute('height'));
   const box = defaultBarcodeBox(template.width, template.height);
   const scale = Math.min(box.w / naturalWidth, box.h / naturalHeight) * dpi / 25.4;
-  const unitMm = scale * 25.4 / dpi, padding = adjustmentPadding(layout, template, unitMm);
-  const svg = barcodeSvg(record, template.origin, globalThis.JsBarcode, { layout, unitMm, padding });
-  const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
+  const unitMm = scale * 25.4 / dpi;
+  const svg = barcodeSvg(record, template.origin, globalThis.JsBarcode, { layout, unitMm });
+  // Rasterize vectors on the paper's fixed pixel grid. Extra space for moved
+  // text must never shift barcode bars onto a different sampling grid.
+  const region = layout.parts.barcode;
+  const raster = `<svg xmlns="http://www.w3.org/2000/svg" width="${canvas.width}" height="${canvas.height}" viewBox="0 0 ${canvas.width} ${canvas.height}"><g transform="translate(${(box.x + region.x) / 25.4 * dpi} ${(box.y + region.y) / 25.4 * dpi}) scale(${scale * region.scale / 100})">${svg}</g></svg>`;
+  const url = URL.createObjectURL(new Blob([raster], { type: 'image/svg+xml' }));
   try {
     const image = await imageFromUrl(url, signal);
-    const region = layout.parts.barcode;
-    context.save();
-    context.translate((box.x + region.x) / 25.4 * dpi, (box.y + region.y) / 25.4 * dpi);
-    context.scale(region.scale / 100, region.scale / 100);
-    context.drawImage(image, -padding * scale, -padding * scale, image.naturalWidth * scale, image.naturalHeight * scale); context.restore();
+    context.drawImage(image, 0, 0);
   } finally { URL.revokeObjectURL(url); }
   return canvas;
 }

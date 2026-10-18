@@ -153,6 +153,24 @@ test('页面识别及勾选提取不会把 SKC 列当成 SKU', () => {
   assert.deepEqual(readSelected('sku').ids, ['9000000000001']);
 });
 
+test('发货批次勾选会取出该批次下全部发货单，而不是只取第一条', () => {
+  document.body.innerHTML = `<div id="root"><table>
+    <thead><tr><th>选择</th><th>发货批次</th><th>物流信息</th><th>发货单号</th><th>商品信息</th><th>发货信息</th></tr></thead>
+    <tbody>
+      <tr><td class="TB_checkCell TB_leftSticky"><label class="CBX_checkbox CBX_active"><input type="checkbox" checked></label></td>
+        <td rowspan="3"><div><span>EB2610201953738</span><div class="order-status-tag_main">待快递揽收</div></div></td>
+        <td>物流单号 772083597287574</td><td>FH2610204714287</td><td>备货单号：WB2610196410786</td><td>24</td></tr>
+      <tr><td>FH2610204714284</td><td>备货单号：WB26101935803342</td><td>17</td></tr>
+      <tr><td>FH2610200251282</td><td>备货单号：WB2610193530698</td><td>9</td></tr>
+      <tr><td class="TB_checkCell TB_leftSticky"><label class="CBX_checkbox"></label></td>
+        <td><div><span>EB2610202027272</span><div class="order-status-tag_main">物流运输中</div></div></td>
+        <td>物流单号 772083597287575</td><td>FH261020471188</td><td>备货单号：WB2610171061812</td><td>6</td></tr>
+    </tbody></table></div>`;
+  assert.deepEqual(readSelected('delivery').ids, ['FH2610204714287', 'FH2610204714284', 'FH2610200251282']);
+  document.querySelectorAll('#root tbody tr')[3].querySelector('input[type="checkbox"], label')?.setAttribute('class', 'CBX_checkbox CBX_active');
+  assert.deepEqual(readSelected('delivery').ids, ['FH2610204714287', 'FH2610204714284', 'FH2610200251282', 'FH261020471188']);
+});
+
 test('使用真实条码和画布生成黑白 PDF，数量、提示页和纸张尺寸正确', async () => {
   const render = await createLabelRenderer(template);
   const canvas = await render(row);
@@ -232,7 +250,8 @@ test('界面可读取勾选、修改数量、生成 PDF；失败和切换店铺�
   const images = openedPdf.getPage(0).node.Resources().lookup(PDFLib.PDFName.of('XObject'), PDFLib.PDFDict);
   const image = images.lookup(images.keys()[0], PDFLib.PDFRawStream);
   const printed = { width: image.dict.get(PDFLib.PDFName.of('Width')).asNumber(), height: image.dict.get(PDFLib.PDFName.of('Height')).asNumber(), packed: inflateSync(image.contents) };
-  assert(printed.width > expected.width, '打印保持 300 DPI，交互预览使用较小图像');
+  assert.equal(printed.width, Math.round(70 / 25.4 * 300), '打印仍保持所选 300 DPI，不受大图预览分辨率影响');
+  assert(expected.width > 70 / 25.4 * 180, '大图不能继续使用 180 DPI 的低分辨率位图');
   const bounds = ({ width, height, packed }) => {
     const stride = Math.ceil(width / 8); let left = width, top = height, right = 0, bottom = 0;
     for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (!(packed[y * stride + (x >> 3)] & (128 >> (x & 7)))) { left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x); bottom = Math.max(bottom, y); }

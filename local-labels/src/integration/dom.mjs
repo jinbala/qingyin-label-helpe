@@ -5,6 +5,52 @@ export function pageType(pathname = location.pathname) {
   return null;
 }
 
+// A checked row on the delivery page is a 发货批次 (batch) row, not a single
+// 发货单: the batch and logistics cells use rowspan and the remaining 发货单
+// rows are plain siblings without their own checkbox. Reading one ID per row
+// therefore printed only the first delivery order of each batch.
+const DELIVERY_SN = /(?<![A-Za-z])FH[-\s]?([A-Za-z0-9]{6,})/gi;
+const DELIVERY_LABEL = /发货单[号码]?[：:\s]*([A-Za-z0-9_-]{6,})/g;
+
+function deliveryGroupRows(row) {
+  const rows = [row, ...row.querySelectorAll('tr')];
+  let covered = 0;
+  for (const cell of row.cells || []) covered = Math.max(covered, (cell.rowSpan || 1) - 1);
+  for (let next = row.nextElementSibling; next && covered > 0; next = next.nextElementSibling) {
+    // A following row that carries its own checkbox starts the next batch.
+    if (next.querySelector('input[type="checkbox"], [role="checkbox"], td[class*="TB_checkCell"], label[class*="CBX_checkbox"]')) break;
+    rows.push(next); covered -= 1;
+  }
+  return rows;
+}
+
+function deliveryIdsIn(element) {
+  const ids = [], text = element.textContent || '';
+  for (const match of text.matchAll(DELIVERY_LABEL)) ids.push(match[1]);
+  for (const match of text.matchAll(DELIVERY_SN)) ids.push(match[0].replace(/\s+/g, ''));
+  return ids;
+}
+
+function deliveryRowIds(row) {
+  const ids = new Set();
+  for (const item of deliveryGroupRows(row)) {
+    // Read cell by cell: joined row text glues neighbouring cells together
+    // ("…574FH2610…"), which hides the start of the next delivery number.
+    for (const target of item.cells?.length ? [...item.cells] : [item]) {
+      for (const id of deliveryIdsIn(target)) ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+function readRowIds(row, type) {
+  if (type === 'delivery') {
+    const ids = deliveryRowIds(row);
+    if (ids.length) return ids;
+  }
+  return [readRowId(row, type)];
+}
+
 function readRowId(row, type) {
   if (type === 'sku') {
     const headers = [...(row.closest('table')?.querySelectorAll('thead th') || document.querySelectorAll('#root th'))];
@@ -39,7 +85,7 @@ export function selectedRows(root = document) {
 export function readSelected(type, clickOrder = new Map(), root = document) {
   const rows = selectedRows(root);
   if (!rows.length) throw new Error('请先勾选当前页中的订单或商品，或手动输入编号。');
-  const ids = [...new Set(rows.map(row => readRowId(row, type)))];
+  const ids = [...new Set(rows.flatMap(row => readRowIds(row, type)))];
   const selectionOrder = [...ids].sort((a, b) => (clickOrder.get(a) ?? 1e12) - (clickOrder.get(b) ?? 1e12));
   return { ids, selectionOrder };
 }
@@ -53,10 +99,12 @@ export function trackSelections(clickOrder) {
     if (!row || !type) return;
     setTimeout(() => {
       try {
-        const id = readRowId(row, type);
+        const ids = readRowIds(row, type);
         const checked = row.querySelector('input[type="checkbox"]:checked, [aria-checked="true"], label[class*="CBX_active"], label[class*="CBX_checked"]');
-        if (checked) { if (!clickOrder.has(id)) clickOrder.set(id, sequence++); }
-        else clickOrder.delete(id);
+        for (const id of ids) {
+          if (checked) { if (!clickOrder.has(id)) clickOrder.set(id, sequence++); }
+          else clickOrder.delete(id);
+        }
       } catch { /* Missing page fields are reported when the user reads the selection. */ }
     }, 0);
   };

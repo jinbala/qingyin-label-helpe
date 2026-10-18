@@ -25,6 +25,7 @@ test('两个旧页面同时新建，后续选择、保存位置和删除都不�
   const nextA = { ...a, templates: [...a.templates, alpha], selected: 'alpha' }, nextB = { ...b, templates: [...b.templates, beta], selected: 'beta' };
   await Promise.all([tabA.saveSettings(nextA), tabB.saveSettings(nextB)]);
   await tabB.saveSettings({ ...nextB, selected: 'local-default', layouts: { beta: normalizeLayout({ parts: { barcode: { x: 1 } } }) } });
+  assert((await tabA.readSettings()).templates.some(template => template.id === 'beta'), '导出备份读取最新库，不改变页面保存基线');
   await tabA.saveSettings({ ...nextA, layouts: { alpha: normalizeLayout({ parts: { label: { x: .5 } } }) } });
   const refreshed = await createSettingsClient(store).loadSettings();
   assert(refreshed.templates.some(template => template.id === 'alpha')); assert(refreshed.templates.some(template => template.id === 'beta'));
