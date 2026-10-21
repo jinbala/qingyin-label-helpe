@@ -1,4 +1,5 @@
 # Track only the independent Qingyin project in this reference workspace.
 /*
 !/.gitignore
+!/README.md
 !/local-labels/
