@@ -81,7 +81,7 @@ test('项目复制到无原插件的临时目录后仍能独立校验、构建�
     const result = spawnSync(process.execPath, [path.join(copy, 'scripts/build.mjs')], { cwd: temporary, encoding: 'utf8', windowsHide: true });
     assert.equal(result.status, 0, result.stderr);
     const manifest = JSON.parse(await readFile(path.join(copy, 'dist/extension/manifest.json'), 'utf8'));
-    assert.equal(manifest.version, '1.4.6');
+    assert.equal(manifest.version, '1.4.7');
     assert.equal((await readFile(path.join(copy, 'dist/qingyin-label-helper.zip'))).subarray(0, 2).toString(), 'PK');
   } finally {
     const resolved = path.resolve(temporary), parent = path.resolve(tmpdir());

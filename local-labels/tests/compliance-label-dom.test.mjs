@@ -145,6 +145,24 @@ test('更换条码不会改变上方自建文字内容；颜色、编号不会�
   assert.equal(svg.querySelector('[data-role="rt"]').getAttribute('text-anchor'), 'end');
 });
 
+test('批次提示页按模板纸张生成边框、上下黑条与居中文字', async () => {
+  const render = await createLabelRenderer({ ...template, width: 70, height: 40 });
+  const canvas = await render(row, { separator: true, dpi: 300 });
+  assert.equal(canvas.width, Math.round(70 / 25.4 * 300));
+  const context = canvas.getContext('2d'), width = canvas.width, height = canvas.height;
+  const dark = (x, y) => context.getImageData(x, y, 1, 1).data[0] < 128;
+  const margin = 2 / 25.4 * 300;
+  assert(dark(width / 2, Math.round(margin + height * 0.10 + height * 0.07)), '上黑条');
+  assert(dark(width / 2, Math.round(height - margin - height * 0.10 - height * 0.07)), '下黑条');
+  assert(dark(Math.round(margin), Math.round(height / 2)), '左边框');
+  let text = false;
+  for (let y = Math.round(height * 0.4); y <= Math.round(height * 0.6) && !text; y++) {
+    for (let x = 0; x < width; x++) if (dark(x, y)) { text = true; break; }
+  }
+  assert(text, '文字位于两条黑条之间');
+  canvas.width = 1;
+});
+
 test('页面识别及勾选提取不会把 SKC 列当成 SKU', () => {
   assert.equal(pageType('/main/order-manager/shipping-list'), 'delivery');
   assert.equal(pageType('/stock/fully-mgt/order-manage'), 'purchase');
@@ -167,8 +185,12 @@ test('发货批次勾选会取出该批次下全部发货单，而不是只取�
         <td>物流单号 772083597287575</td><td>FH261020471188</td><td>备货单号：WB2610171061812</td><td>6</td></tr>
     </tbody></table></div>`;
   assert.deepEqual(readSelected('delivery').ids, ['FH2610204714287', 'FH2610204714284', 'FH2610200251282']);
+  assert.deepEqual(readSelected('delivery').groups, [['FH2610204714287', 'FH2610204714284', 'FH2610200251282']]);
   document.querySelectorAll('#root tbody tr')[3].querySelector('input[type="checkbox"], label')?.setAttribute('class', 'CBX_checkbox CBX_active');
   assert.deepEqual(readSelected('delivery').ids, ['FH2610204714287', 'FH2610204714284', 'FH2610200251282', 'FH261020471188']);
+  assert.deepEqual(readSelected('delivery').groups, [
+    ['FH2610204714287', 'FH2610204714284', 'FH2610200251282'], ['FH261020471188'],
+  ]);
 });
 
 test('使用真实条码和画布生成黑白 PDF，数量、提示页和纸张尺寸正确', async () => {
@@ -275,6 +297,39 @@ test('界面可读取勾选、修改数量、生成 PDF；失败和切换店铺�
   restoredRoot.querySelector('#layout-part').value = 'barcode'; restoredRoot.querySelector('#layout-part').dispatchEvent(new window.Event('change'));
   assert.equal(restoredRoot.querySelector('#layout-x').value, '-1');
   assert.equal(restoredRoot.querySelector('#layout-scale').value, '95');
+});
+
+test('多个发货批次一起读取后提供提示页选项，勾选后 PDF 含区分页', async () => {
+  window.dispatchEvent(new window.Event('pagehide'));
+  document.querySelector('#qingyin-label-helper-root')?.remove();
+  window.history.pushState({}, '', '/main/order-manager/shipping-list');
+  document.body.innerHTML = `<div id="root"><table>
+    <thead><tr><th>选择</th><th>发货批次</th><th>发货单号</th></tr></thead>
+    <tbody>
+      <tr><td><label class="CBX_checkbox CBX_active"></label></td><td><div><span>EB2610201953738</span><div class="order-status-tag_main">待快递揽收</div></div></td><td>FH2610204714287</td></tr>
+      <tr><td><label class="CBX_checkbox CBX_active"></label></td><td><div><span>EB2610202027272</span><div class="order-status-tag_main">物流运输中</div></div></td><td>FH261020471188</td></tr>
+    </tbody></table></div>`;
+  let openedPdf, settings = {};
+  const services = {
+    getMallId: async () => '123', loadSettings: async () => settings, saveSettings: async data => { settings = data; },
+    request: async config => ({ success: true, result: config.data.deliveryOrderSnList.map(id => ({ productSkuId: id, productSkcId: '800000000001', labelCode: '53711398047', deliveryNum: 1 })) }),
+    openPdf: async bytes => { openedPdf = await PDFLib.PDFDocument.load(bytes); },
+  };
+  await mountLabelApp(services, './style.css');
+  const root = document.querySelector('#qingyin-label-helper-root').shadowRoot, $ = id => root.querySelector(id);
+  $('#launcher').click(); await until(() => !$('#overlay').hidden && $('#mall').value === '123');
+  assert.equal($('#type').value, 'delivery');
+  assert.equal($('#batch-separator-row').hidden, true);
+  $('#read-selected').click(); await until(() => $('#rows').children.length === 2 && !$('#read-selected').disabled);
+  assert.equal($('#batch-separator-row').hidden, false, '两个批次时应出现提示页选项');
+  $('#batch-separators').checked = true;
+  $('#batch-separators').dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert.match($('#count').textContent, /3 张/);
+  $('#ack').checked = true; $('#ack').dispatchEvent(new window.Event('change', { bubbles: true }));
+  $('#generate').click(); await until(() => openedPdf && !$('#generate').disabled);
+  assert.equal(openedPdf.getPageCount(), 3);
+  document.querySelector('#qingyin-label-helper-root')?.remove();
+  window.dispatchEvent(new window.Event('pagehide'));
 });
 
 test('真实设计器保存经扩展通信持久化，旧页面保存后重新挂载仍可编辑新模板', async () => {

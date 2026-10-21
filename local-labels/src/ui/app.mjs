@@ -44,7 +44,7 @@ export async function mountLabelApp(services, stylesheet) {
           <label id="ack-row" class="actions" hidden><input type="checkbox" id="ack" style="width:16px"><span>我已核对以上提示和返回的商品数据</span></label>
           <div class="content"><div>
             <h2 class="section-title">打印明细<small id="count">尚未读取商品</small></h2>
-            <div class="sort-row"><select id="sort" aria-label="打印顺序"><option value="table">页面 / 输入顺序</option><option value="selected">勾选顺序</option><option value="skc">SKC ID 升序</option><option value="time">备货单创建时间：新到旧</option></select><label><input id="separators" type="checkbox">不同 SKU 之间添加提示页</label><button id="clear">清空</button></div>
+            <div class="sort-row"><select id="sort" aria-label="打印顺序"><option value="table">页面 / 输入顺序</option><option value="selected">勾选顺序</option><option value="skc">SKC ID 升序</option><option value="time">备货单创建时间：新到旧</option></select><label><input id="separators" type="checkbox">不同 SKU 之间添加提示页</label><label id="batch-separator-row" hidden><input id="batch-separators" type="checkbox">不同发货批次之间添加提示页</label><button id="clear">清空</button></div>
             <div class="table-scroll"><table><thead><tr><th>SKC / SKU</th><th>规格</th><th>条码</th><th>打印数量</th><th></th></tr></thead><tbody id="rows"></tbody></table><div class="empty" id="empty">读取数据后，在这里核对规格与数量。</div></div>
             <div class="template-toolbar"><strong>标签模板</strong><button id="new-template">新建模板</button><button id="import-template">导入 JSON</button><input id="template-file" type="file" accept=".json,application/json" hidden><button id="backup-templates">备份全部模板</button><button id="restore-templates">导入备份</button><input id="backup-file" type="file" accept=".json,application/json" hidden></div>
             <p class="hint">更新请覆盖原目录后重新加载。换目录或移除扩展前，请先“备份全部模板”。</p>
@@ -64,6 +64,10 @@ export async function mountLabelApp(services, stylesheet) {
   const allTemplates = () => state.local;
   const chosen = () => allTemplates().find(template => template.id === state.selected);
   const sorted = () => sortRecords(state.records, $('#sort').value);
+  const skuSeparators = () => $('#separators').checked;
+  // The batch option is only offered once the loaded data spans several
+  // 发货批次 (see updateCounts); the hidden checkbox never adds pages.
+  const batchSeparators = () => !$('#batch-separator-row').hidden && $('#batch-separators').checked;
   const notice = (text, level = '') => { $('#notice').textContent = text; $('#notice').className = `notice ${level}`; };
   const save = (overrides = {}) => services.saveSettings({ schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts, ...overrides });
   const savedSettings = async () => {
@@ -109,7 +113,7 @@ export async function mountLabelApp(services, stylesheet) {
 
   function updateButtons() {
     let valid = false;
-    try { makeJobs(state.records, $('#separators').checked); valid = true; } catch { /* Inline quantity controls display validity. */ }
+    try { makeJobs(state.records, skuSeparators(), batchSeparators()); valid = true; } catch { /* Inline quantity controls display validity. */ }
     $('#generate').disabled = state.busy || !valid || !chosen() || !layoutEditor.isValid() || layoutEditor.isPending() || state.warnings.length > 0 && !$('#ack').checked;
     $('#edit-template').disabled = state.busy || !chosen();
     $('#delete-template').disabled = state.busy || !state.local.some(t => t.id === state.selected) || state.local.length <= 1;
@@ -142,9 +146,14 @@ export async function mountLabelApp(services, stylesheet) {
   }
 
   function updateCounts() {
+    // The batch separator only makes sense when the loaded data spans several
+    // 发货批次; hide and reset the choice otherwise.
+    const multipleBatches = new Set(state.records.map(record => record.batchRank ?? 0)).size > 1;
+    $('#batch-separator-row').hidden = !multipleBatches;
+    if (!multipleBatches) $('#batch-separators').checked = false;
     let text = `${state.records.length} 项 SKU`;
     if (state.records.length) {
-      try { text += ` · ${makeJobs(state.records, $('#separators').checked).pages} 张（含提示页）`; }
+      try { text += ` · ${makeJobs(state.records, skuSeparators(), batchSeparators()).pages} 张（含提示页）`; }
       catch (error) { text += ` · ${error.message}`; }
     }
     $('#count').textContent = text; updateButtons();
@@ -212,7 +221,7 @@ export async function mountLabelApp(services, stylesheet) {
     busy(true, '正在获取商品数据…'); $('#progress').value = 0;
     try {
       const result = await fetchLabels({
-        type: $('#type').value, ids: selection.ids, selectionOrder: selection.selectionOrder, mallId: $('#mall').value.trim(),
+        type: $('#type').value, ids: selection.ids, groups: selection.groups, selectionOrder: selection.selectionOrder, mallId: $('#mall').value.trim(),
         origin: services.dataOrigin || location.origin, request: services.request, signal: controller.signal,
         onProgress: value => { $('#progress').value = value; },
       });
@@ -252,7 +261,7 @@ export async function mountLabelApp(services, stylesheet) {
   on('#type', () => { clearRecords(); notice('编号类型已改变，请重新读取商品数据。'); }, 'change');
   on('#mall', () => { clearRecords(); notice('店铺已改变，请重新读取商品数据。'); }, 'input');
   on('#sort', () => { renderRows(); refreshPreview(); }, 'change');
-  on('#separators', updateCounts, 'change'); on('#ack', updateButtons, 'change');
+  on('#separators', updateCounts, 'change'); on('#batch-separators', updateCounts, 'change'); on('#ack', updateButtons, 'change');
   let previewTimer;
   on('#origin', () => { clearTimeout(previewTimer); previewTimer = setTimeout(refreshPreview, 250); }, 'input');
   on('#new-template', () => openEditor());
@@ -303,7 +312,7 @@ export async function mountLabelApp(services, stylesheet) {
     try {
       const template = await resolvedTemplate();
       const result = await generatePdf({
-        records: structuredClone(sorted()), template, separators: $('#separators').checked, dpi: Number($('#dpi').value), signal: controller.signal,
+        records: structuredClone(sorted()), template, separators: skuSeparators(), batchSeparators: batchSeparators(), dpi: Number($('#dpi').value), signal: controller.signal,
         onProgress: ({ percent, completed, pages }) => { $('#progress').value = percent; $('#progress-text').textContent = `生成 PDF ${percent}% · ${completed}/${pages} 张`; },
       });
       controller.signal.throwIfAborted();

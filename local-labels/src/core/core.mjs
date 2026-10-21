@@ -48,7 +48,7 @@ export function quantity(value) {
   return number;
 }
 
-export function makeJobs(records, separators) {
+export function makeJobs(records, separators, batchSeparators = false) {
   if (!records.length) throw new Error('请先获取商品数据。');
   const jobs = [];
   let pages = 0;
@@ -60,7 +60,10 @@ export function makeJobs(records, separators) {
     jobs.push({ record, quantity: count, separator: false });
     pages += count;
     const next = records[index + 1];
-    if (separators && next && (String(record.productSkuId) !== String(next.productSkuId) || record.labelCode !== next.labelCode)) {
+    const differentSku = next && (String(record.productSkuId) !== String(next.productSkuId) || record.labelCode !== next.labelCode);
+    const differentBatch = next && (record.batchRank ?? 0) !== (next.batchRank ?? 0);
+    // Both options share one separator page when SKU and 发货批次 change together.
+    if (next && (separators && differentSku || batchSeparators && differentBatch)) {
       jobs.push({ record: null, quantity: 1, separator: true });
       pages++;
     }
@@ -104,13 +107,26 @@ function spec(parts) {
 }
 
 // request is supplied by the extension bridge, or by the local preview's fixture service.
-export async function fetchLabels({ type, ids, mallId, origin, request, onProgress = () => {}, signal, selectionOrder = ids }) {
+export async function fetchLabels({ type, ids, groups, mallId, origin, request, onProgress = () => {}, signal, selectionOrder = ids }) {
   if (!['purchase', 'delivery', 'sku'].includes(type)) throw new Error('不支持的编号类型。');
   if (!ids.length) throw new Error('请先勾选商品或输入编号。');
   if (!/^\d+$/.test(String(mallId))) throw new Error('请填写当前店铺的 Mall ID。');
   if (!SELLER_HOSTS.has(new URL(origin).hostname)) throw new Error('请在 TEMU 商家后台获取真实商品数据。');
   const all = [], warnings = [], missingIds = [];
-  const batches = chunks(ids, type === 'sku' ? 20 : 100);
+  const limit = type === 'sku' ? 20 : 100, batches = [];
+  if (type === 'delivery' && Array.isArray(groups) && groups.length) {
+    // Ask per 发货批次 so every record can be traced back to the batch it
+    // belongs to; the delivery response itself does not return that ID.
+    const seen = new Set();
+    for (const [batchRank, group] of groups.entries()) {
+      const unique = [];
+      for (const id of group) { const key = String(id); if (!seen.has(key)) { seen.add(key); unique.push(key); } }
+      for (const batch of chunks(unique, limit)) batches.push({ batch, batchRank });
+    }
+    for (const batch of chunks(ids.filter(id => !seen.has(String(id))), limit)) batches.push({ batch, batchRank: 0 });
+  } else {
+    for (const batch of chunks(ids, limit)) batches.push({ batch, batchRank: 0 });
+  }
   const selectedRanks = new Map(selectionOrder.map((id, index) => [String(id), index]));
   const post = async (url, data) => {
     signal?.throwIfAborted();
@@ -118,7 +134,7 @@ export async function fetchLabels({ type, ids, mallId, origin, request, onProgre
     signal?.throwIfAborted();
     return assertSuccess(response, 'TEMU 数据获取失败，请确认店铺和登录状态。');
   };
-  for (const [batchIndex, batch] of batches.entries()) {
+  for (const [batchIndex, { batch, batchRank }] of batches.entries()) {
     let raw, quantities = new Map();
     if (type === 'sku') {
       raw = (await post('https://seller.kuajingmaihuo.com/bg-visage-mms/labelcode/pageQuery', {
@@ -162,7 +178,7 @@ export async function fetchLabels({ type, ids, mallId, origin, request, onProgre
         fulfilmentProductSkuId: type === 'delivery' && item.isCustomProduct ? `DZ${source.productSkuId}` : detail?.fulfilmentProductSkuId || source.fulfilmentProductSkuId || '',
         labelCode: String(source.labelCode), sourceId, purchaseTime: item.purchaseTime,
         quantity: Number.isInteger(Number(initialQuantity)) && Number(initialQuantity) > 0 ? Number(initialQuantity) : 1,
-        selectionRank: selectedRanks.get(sourceId) ?? (batchIndex * 100 + index),
+        selectionRank: selectedRanks.get(sourceId) ?? (batchIndex * 100 + index), batchRank,
       };
       if (type !== 'sku' && !(Number(initialQuantity) > 0)) warnings.push(`SKU ${record.productSkuId} 未取得有效数量，暂设为 1，请核对。`);
       for (const [field, english, chinese] of [

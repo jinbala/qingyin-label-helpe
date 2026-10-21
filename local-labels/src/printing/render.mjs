@@ -89,7 +89,34 @@ function wrapText(context, text, maxWidth) {
   return lines;
 }
 
+// The separator sheet uses the paper size of the chosen template: a frame,
+// two heavy bars and the warning text between them.
+function renderSeparator(template, dpi) {
+  const width = Math.round(template.width / 25.4 * dpi), height = Math.round(template.height / 25.4 * dpi);
+  const canvas = document.createElement('canvas');
+  canvas.width = width; canvas.height = height;
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+  const mm = dpi / 25.4;
+  context.fillStyle = 'white'; context.fillRect(0, 0, width, height);
+  context.fillStyle = 'black'; context.strokeStyle = 'black';
+  const margin = Math.max(1, 2 * mm), stroke = Math.max(1, 0.3 * mm);
+  context.lineWidth = stroke;
+  context.strokeRect(margin, margin, width - margin * 2, height - margin * 2);
+  const barHeight = Math.max(stroke * 2, height * 0.14), barInset = margin + width * 0.045, barWidth = width - barInset * 2;
+  context.fillRect(barInset, margin + height * 0.10, barWidth, barHeight);
+  context.fillRect(barInset, height - margin - height * 0.10 - barHeight, barWidth, barHeight);
+  const text = '前后规格不同，请不要贴错', maxWidth = width - margin * 2 - 4 * mm;
+  let size = Math.min(height * 0.24, 12 * mm);
+  const setFont = value => { context.font = `bold ${value.toFixed(2)}px ${FONT}`; };
+  setFont(size);
+  while (size > 2 * mm && context.measureText(text).width > maxWidth) { size *= 0.95; setFont(size); }
+  context.textAlign = 'center'; context.textBaseline = 'middle';
+  context.fillText(text, width / 2, height / 2);
+  return canvas;
+}
+
 async function renderSimple(template, record, { dpi, separator, signal }) {
+  if (separator) return renderSeparator(template, dpi);
   const layout = normalizeLayout(template.layout, template.width, template.height);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(template.width / 25.4 * dpi);
@@ -98,13 +125,6 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   context.fillStyle = 'white'; context.fillRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = 'black'; context.textBaseline = 'top';
   const margin = 2 / 25.4 * dpi, usableWidth = canvas.width - margin * 2;
-  if (separator) {
-    const fontSize = Math.max(12, dpi / 12);
-    context.font = `bold ${fontSize}px ${FONT}`;
-    const lines = wrapText(context, '前后规格不同，请不要贴错', usableWidth);
-    lines.forEach((line, index) => context.fillText(line, margin, canvas.height / 2 - lines.length * fontSize / 2 + index * fontSize * 1.35));
-    return canvas;
-  }
   const fields = [template.productName, template.manufacturer && `Manufacturer: ${template.manufacturer}`,
     template.address, template.responsiblePerson && `Responsible person: ${template.responsiblePerson}`,
     template.contact, template.warning].filter(Boolean).map(text => variables(text, record));
@@ -240,10 +260,10 @@ export function appendImagePage(pdf, imageRef, widthMm, heightMm) {
   page.pushOperators(lib.pushGraphicsState(), lib.concatTransformationMatrix(width, 0, 0, height, 0, 0), lib.drawObject(name), lib.popGraphicsState());
 }
 
-export async function generatePdf({ records, template, separators = false, dpi = 300, signal, onProgress = () => {} }) {
+export async function generatePdf({ records, template, separators = false, batchSeparators = false, dpi = 300, signal, onProgress = () => {} }) {
   template = validateTemplate(template);
   if (![300, 600].includes(Number(dpi))) throw new Error('请选择 300 或 600 DPI。');
-  const { jobs, pages } = makeJobs(records, separators);
+  const { jobs, pages } = makeJobs(records, separators, batchSeparators);
   const render = await createLabelRenderer(template, { signal });
   const pdf = await globalThis.PDFLib.PDFDocument.create();
   pdf.setTitle('合规标签'); pdf.setCreator('轻印标签助手');

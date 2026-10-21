@@ -39,6 +39,18 @@ test('数量和条码严格校验；提示页只在不同 SKU 之间插入；防
   assert.throws(() => makeJobs([{ ...records[0], quantity: 9999 }, records[1]], false), /超过/);
 });
 
+test('不同发货批次之间按需插入提示页，同批次内不重复插入', () => {
+  const batch = (rank, quantity = 1) => ({ productSkuId: '1', labelCode: '123', quantity, batchRank: rank });
+  const records = [batch(0), batch(0), batch(1), batch(1), batch(2)];
+  const off = makeJobs(records, false, false);
+  assert.equal(off.pages, 5); assert.equal(off.jobs.filter(job => job.separator).length, 0);
+  const on = makeJobs(records, false, true);
+  assert.equal(on.pages, 7); assert.equal(on.jobs.filter(job => job.separator).length, 2);
+  // A boundary where both conditions hold only inserts one separator.
+  const mixed = makeJobs([{ ...batch(0), productSkuId: '1', labelCode: '1' }, { ...batch(1), productSkuId: '2', labelCode: '2' }], true, true);
+  assert.equal(mixed.jobs.filter(job => job.separator).length, 1);
+});
+
 test('轻印模板格式独立，拒绝旧对象模板并丢弃外部资源属性', () => {
   const own = defaultTemplates()[1], saved = JSON.stringify(own);
   assert.deepEqual(localTemplate(JSON.parse(saved)), own);
@@ -105,6 +117,16 @@ test('发货每组 100 个、定制品 SKU 前缀和零数量提示', async () =
   assert.equal(result.records[0].fulfilmentProductSkuId, 'DZ1001');
   assert.equal(result.records[0].quantity, 1);
   assert.match(result.warnings.join(''), /数量/);
+});
+
+test('按勾选的分发货批次请求，记录带批次序号，跨批次重复编号只取一次', async () => {
+  const calls = [];
+  const result = await fetchLabels({ type: 'delivery', ids: ['FH1', 'FH2', 'FH3'], groups: [['FH1'], ['FH2', 'FH3', 'FH2']], mallId: '123', origin,
+    request: async config => { calls.push(config); return { success: true, result: config.data.deliveryOrderSnList.map(id => ({ productSkuId: id, productSkcId: '200', labelCode: `L${id}`, deliveryNum: 1 })) }; },
+  });
+  assert.deepEqual(calls.map(call => call.data.deliveryOrderSnList), [['FH1'], ['FH2', 'FH3']]);
+  assert.deepEqual(result.records.map(row => row.batchRank), [0, 1, 1]);
+  assert.deepEqual(result.records.map(row => row.productSkuId), ['FH1', 'FH2', 'FH3']);
 });
 
 test('接口失败、空数据、缺失编号、取消均有明确处理', async () => {

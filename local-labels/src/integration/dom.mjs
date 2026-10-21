@@ -85,9 +85,12 @@ export function selectedRows(root = document) {
 export function readSelected(type, clickOrder = new Map(), root = document) {
   const rows = selectedRows(root);
   if (!rows.length) throw new Error('请先勾选当前页中的订单或商品，或手动输入编号。');
-  const ids = [...new Set(rows.flatMap(row => readRowIds(row, type)))];
+  // One group per selected row: on the delivery page a row is a whole 发货批次,
+  // so the groups let later steps tell batches apart (and separate them).
+  const groups = rows.map(row => readRowIds(row, type));
+  const ids = [...new Set(groups.flat())];
   const selectionOrder = [...ids].sort((a, b) => (clickOrder.get(a) ?? 1e12) - (clickOrder.get(b) ?? 1e12));
-  return { ids, selectionOrder };
+  return { ids, selectionOrder, groups };
 }
 
 export function trackSelections(clickOrder) {
