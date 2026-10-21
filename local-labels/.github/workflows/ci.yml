@@ -16,8 +16,13 @@ jobs:
         run: npm --prefix tests ci
       - name: 运行自动化测试
         run: npm test
-      - name: 构建并校验独立安装包
-        run: npm run build
+      - name: 构建并校验独立安装包（连续两次必须同哈希）
+        run: |
+          npm run build
+          first=$(sha256sum dist/qingyin-label-helper.zip | awk '{print $1}')
+          npm run build
+          second=$(sha256sum dist/qingyin-label-helper.zip | awk '{print $1}')
+          test "$first" = "$second"
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:

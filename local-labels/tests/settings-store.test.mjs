@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSettingsStore } from '../src/printing/settings-store.mjs';
 import { createSettingsClient, settingsPatch } from '../src/core/settings.mjs';
+import { settingsPayloadBytes } from '../src/core/footprint.mjs';
 import { defaultTemplates, SETTINGS_SCHEMA, localTemplate } from '../src/core/templates.mjs';
 import { createDesign, newElement } from '../src/core/design.mjs';
 import { normalizeLayout } from '../src/core/layout.mjs';
@@ -16,7 +17,7 @@ function memoryStorage() {
 }
 const initial = () => ({ schema: SETTINGS_SCHEMA, templates: defaultTemplates(), selected: 'local-default', layouts: {} });
 
-test('两个旧页面同时新建，后续选择、保存位置和删除都不会覆盖另一页的新模板', async () => {
+test('两个旧页面同时新建，后续选择、保存位置和显式删除都不会覆盖另一页的新模板', async () => {
   const storage = memoryStorage(), store = createSettingsStore(storage);
   await store('save', settingsPatch({}, initial()));
   const tabA = createSettingsClient(store), tabB = createSettingsClient(store);
@@ -30,9 +31,20 @@ test('两个旧页面同时新建，后续选择、保存位置和删除都不�
   const refreshed = await createSettingsClient(store).loadSettings();
   assert(refreshed.templates.some(template => template.id === 'alpha')); assert(refreshed.templates.some(template => template.id === 'beta'));
   assert.equal(refreshed.layouts.alpha.parts.label.x, .5); assert.equal(refreshed.layouts.beta.parts.barcode.x, 1);
-  await tabA.saveSettings({ ...initial(), selected: 'local-default' });
+  await tabA.saveSettings({ ...initial(), selected: 'local-default' }, { templates: ['alpha'] });
   const deleted = await store('load'); assert(!deleted.templates.some(template => template.id === 'alpha')); assert(deleted.templates.some(template => template.id === 'beta'));
   assert.equal(deleted.layouts.beta.parts.barcode.x, 1);
+});
+
+test('缺失的模板不会被隐式删除，只有显式删除才会写入', async () => {
+  const alpha = { ...createDesign(), id: 'alpha', name: '页面 A 的模板' };
+  const before = { schema: SETTINGS_SCHEMA, templates: [...defaultTemplates(), alpha], selected: 'alpha', layouts: { alpha: normalizeLayout({ parts: { label: { x: 1 } } }) } };
+  const after = { ...initial() };
+  assert.deepEqual(settingsPatch(before, after).deletedTemplates, [], '状态里缺失不等于删除');
+  assert.deepEqual(settingsPatch(before, after, { templates: ['alpha'] }).deletedTemplates, ['alpha']);
+  assert.deepEqual(settingsPatch(before, after, { templates: ['alpha'] }).layouts, {}, '未改动的位置不重发');
+  assert.deepEqual(settingsPatch(before, after).deletedLayouts, [], '位置缺失也不隐式删除');
+  assert.deepEqual(settingsPatch(before, after, { layouts: ['alpha'] }).deletedLayouts, ['alpha']);
 });
 
 test('写入失败或写后核对失败不能报告成功，失败后可重试且旧模板保留', async () => {
@@ -63,6 +75,14 @@ test('模板总量超出浏览器配额时在写入前拒绝，并指出占用�
     error => /存储空间不足/.test(error.message) && /10 MB/.test(error.message) && /占用最大：大图模板/.test(error.message),
   );
   assert.equal(storage.data.qingyinLabelSettings.templates.length, before, '拒绝时不写入存储');
+});
+
+test('存储占用按 UTF-8 字节估算中文文本', () => {
+  const template = { schema: 'qingyin-template/v1', kind: 'simple', id: 'cn', name: '中文模板名', width: 70, height: 40, productName: '中文商品名称'.repeat(1000) };
+  const estimated = settingsPayloadBytes({ templates: [template] });
+  const actual = new TextEncoder().encode(JSON.stringify({ templates: [template] })).length;
+  assert(estimated >= actual * .9, `估算 ${estimated} 不应明显低于实际 ${actual}`);
+  assert(estimated <= actual * 1.2, `估算 ${estimated} 不应明显高于实际 ${actual}`);
 });
 
 test('后台只接受本扩展的商家页面与模拟验证页的模板读写', async () => {

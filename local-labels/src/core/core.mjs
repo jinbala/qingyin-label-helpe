@@ -1,5 +1,6 @@
 import { normalizeLayout } from './layout.mjs';
 import { validateDesign } from './design.mjs';
+import { messageOf } from './errors.mjs';
 
 export const MAX_PAGES = 10000;
 export const SELLER_HOSTS = new Set([
@@ -197,10 +198,18 @@ export async function fetchLabels({ type, ids, groups, mallId, origin, request, 
       all.push(record);
     }
     if (translations.length) {
-      const result = await post('https://seller.kuajingmaihuo.com/bg-anniston-mms/translation/batchQuery', {
-        translateScene: 6, textDesc: '商品规格', targetLangList: ['en'], translateReqs: translations,
-      });
-      for (const { record, field, key } of pending) {
+      let result;
+      try {
+        result = await post('https://seller.kuajingmaihuo.com/bg-anniston-mms/translation/batchQuery', {
+          translateScene: 6, textDesc: '商品规格', targetLangList: ['en'], translateReqs: translations,
+        });
+      } catch (error) {
+        if (error?.name === 'AbortError') throw error;
+        // Translation is a convenience: keep the Chinese spec already on the
+        // record and let the user verify it instead of failing the whole read.
+        warnings.push(`英文规格翻译失败，已保留原文，请核对：${messageOf(error)}`);
+      }
+      if (result) for (const { record, field, key } of pending) {
         const text = result?.translateRespMap?.[key]?.find(item => item.lang === 'en')?.translation;
         if (text) record[field] = text;
         else warnings.push(`SKU ${record.productSkuId} 的英文规格未返回，保留原文，请核对。`);

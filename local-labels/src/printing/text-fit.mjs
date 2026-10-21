@@ -3,7 +3,7 @@
 // font metrics instead of being estimated from a character count.
 export function fitLines(context, text, maxWidth) {
   const lines = [];
-  for (const paragraph of String(text).split('\n')) {
+  for (const paragraph of String(text).replace(/\r\n?/g, '\n').split('\n')) {
     let line = '';
     for (const char of paragraph) {
       if (line && context.measureText(line + char).width > maxWidth) { lines.push(line); line = ''; }

@@ -6,7 +6,12 @@ export const STORAGE_BUDGET_BYTES = 9.5 * 1024 * 1024;
 export const STORAGE_LIMIT_LABEL = '10 MB';
 
 const MEGABYTE = 1024 * 1024;
-const text = value => (typeof value === 'string' ? value.length : 0);
+const encoder = new TextEncoder();
+// Chrome measures the serialised value, so Chinese text costs more than its
+// JavaScript character count. Embedded images are base64 (ASCII), where the
+// string length already equals the stored byte count.
+const text = value => (typeof value === 'string' ? encoder.encode(value).length : 0);
+const image = value => (typeof value === 'string' ? value.length : 0);
 
 // Cheap estimate of what a template costs once stored. Embedded images and
 // free text dominate, and base64 keeps one character per stored byte, so this
@@ -16,7 +21,7 @@ export function templatePayloadBytes(template) {
   let bytes = 96;
   for (const key of ['id', 'name', 'productName', 'manufacturer', 'address', 'responsiblePerson', 'contact', 'warning', 'origin']) bytes += text(template[key]);
   for (const element of template.elements || []) {
-    bytes += 64 + text(element.name) + text(element.text) + text(element.src);
+    bytes += 64 + text(element.name) + text(element.text) + image(element.src);
   }
   return bytes;
 }

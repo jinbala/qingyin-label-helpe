@@ -14,8 +14,12 @@ try {
   const record = id && await pdfStore('readonly', store => store.get(id));
   if (!record || record.createdAt < Date.now() - 24 * 60 * 60 * 1000) throw new Error('预览已过期，请重新生成标签。');
   url = URL.createObjectURL(record.blob);
-  frame.addEventListener('load', () => { print.disabled = false; status.textContent = 'PDF 已生成，请预览后打印。'; }, { once: true });
+  let settled = false;
+  const timer = setTimeout(() => { if (!settled) status.textContent = 'PDF 加载超时，请关闭后重新生成，或使用下载按钮。'; }, 10000);
+  frame.addEventListener('load', () => { settled = true; clearTimeout(timer); print.disabled = false; status.textContent = 'PDF 已生成，请预览后打印。'; }, { once: true });
+  frame.addEventListener('error', () => { if (settled) return; settled = true; clearTimeout(timer); status.textContent = 'PDF 加载失败，请重新生成，或使用下载按钮保存后打印。'; }, { once: true });
   frame.src = url;
   download.href = url; download.download = record.filename; download.hidden = false;
   document.title = record.filename;
+  window.addEventListener('pagehide', () => clearTimeout(timer), { once: true });
 } catch (error) { status.textContent = error.message; }

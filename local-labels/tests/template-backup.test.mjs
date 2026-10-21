@@ -17,6 +17,14 @@ function sourceSettings() {
   return { ...initial(), templates: [...defaultTemplates(), design], selected: design.id, layouts: { [design.id]: normalizeLayout({ parts: { barcode: { x: 1, scale: 95 } } }) } };
 }
 
+test('超过 500 个模板仍可整库备份', () => {
+  const base = defaultTemplates()[0];
+  const settings = { schema: SETTINGS_SCHEMA, templates: Array.from({ length: 501 }, (_, index) => ({ ...base, id: `local-${index}`, name: `模板 ${index}` })), selected: 'local-0', layouts: {} };
+  const backup = createTemplateBackup(settings);
+  assert.equal(backup.settings.templates.length, 501);
+  assert.equal(backup.settings.selected, 'local-0');
+});
+
 test('整库备份经 JSON 跨存储往返，保留模板、嵌入图片和位置；相同模板跳过，冲突另存', () => {
   const source = sourceSettings(), backup = JSON.parse(JSON.stringify(createTemplateBackup(source))), original = JSON.stringify(source);
   const restored = mergeTemplateBackup(initial(), backup);

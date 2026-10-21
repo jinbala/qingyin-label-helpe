@@ -1,13 +1,43 @@
 import { bakeDesignLayout, createDesign, newElement, ELEMENT_TYPES, DESIGN_SAMPLE, roundMm } from '../core/design.mjs';
+import { messageOf } from '../core/errors.mjs';
 import { localTemplate } from '../core/templates.mjs';
 import { barcodeSvg } from '../printing/render.mjs';
 import { designSvg, elementMarkup } from '../printing/design-svg.mjs';
 
 const NS = 'http://www.w3.org/2000/svg';
+const MAX_IMAGE_CHARS = 2800000;
+const MAX_IMAGE_SIDE = 4096;
 const clone = draft => ({ ...draft, elements: draft.elements.map(element => ({ ...element })), ...(draft.layout ? { layout: structuredClone(draft.layout) } : {}) });
 const equal = (a, b) => ['name', 'width', 'height', 'origin'].every(key => a[key] === b[key]) && a.elements.length === b.elements.length && a.elements.every((element, i) => {
   const other = b.elements[i]; return Object.keys(element).length === Object.keys(other).length && Object.keys(element).every(key => element[key] === other[key]);
 });
+
+// Keep the uploaded data URL when no downscale is needed: re-encoding a JPEG as
+// PNG used to inflate photos past the 2.8 MB template limit. Oversized images
+// are redrawn to fit the pixel and byte budgets, preserving their format where
+// possible and falling back to JPEG only when PNG/WebP cannot fit.
+function importedImageSource(image, type, data) {
+  const side = Math.max(image.naturalWidth, image.naturalHeight);
+  if (side <= MAX_IMAGE_SIDE && data.length <= MAX_IMAGE_CHARS) return data;
+  const ratio = Math.min(1, MAX_IMAGE_SIDE / side);
+  const width = Math.max(1, Math.round(image.naturalWidth * ratio)), height = Math.max(1, Math.round(image.naturalHeight * ratio));
+  const draw = (w, h) => {
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+    canvas.getContext('2d').drawImage(image, 0, 0, w, h); return canvas;
+  };
+  const formats = type === 'image/png' ? ['image/png'] : [type, 'image/jpeg'];
+  for (const format of formats) {
+    for (const quality of [0.92, 0.85, 0.75]) {
+      const src = draw(width, height).toDataURL(format, quality);
+      if (src.length <= MAX_IMAGE_CHARS) return src;
+    }
+  }
+  for (let scale = 0.75; scale >= 0.25; scale -= 0.15) {
+    const src = draw(Math.max(1, Math.round(width * scale)), Math.max(1, Math.round(height * scale))).toDataURL('image/jpeg', 0.8);
+    if (src.length <= MAX_IMAGE_CHARS) return src;
+  }
+  throw new Error('图片过大，请缩小后重新导入。');
+}
 
 export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () => {} }) {
   const stylesheet = document.createElement('link'); stylesheet.rel = 'stylesheet'; stylesheet.href = new URL('./template-designer.css', import.meta.url).href; root.append(stylesheet);
@@ -49,7 +79,7 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
     // Editing cannot change an embedded image payload, so only its prefix is
     // rechecked here; the full pattern runs when the template is saved.
     try { action(); localTemplate(draft, { trustImages: true }); commit(before); paintAll(); return true; }
-    catch (error) { draft = clone(before.draft); selected = before.selected; paintAll(); setStatus(error.message, true); return false; }
+    catch (error) { draft = clone(before.draft); selected = before.selected; paintAll(); setStatus(messageOf(error), true); return false; }
   }
   function zoom() {
     if (!draft) return;
@@ -72,10 +102,10 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
   function paintAll() {
     if (!draft) return;
     try {
-      $('#design-paper').innerHTML = designSvg(draft, sample, barcodeSvg, { editing: true });
+      $('#design-paper').innerHTML = designSvg(draft, sample, barcodeSvg);
       $('#design-paper').classList.toggle('with-grid', $('#design-grid').checked);
       zoom(); paintLayers(); paintProperties(); historyButtons();
-    } catch (error) { setStatus(error.message, true); }
+    } catch (error) { setStatus(messageOf(error), true); }
   }
   function selectionOverlay() {
     const svg = $('#design-paper svg'); if (!svg) return;
@@ -115,7 +145,7 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
     const element = selectedElement(), node = element && $(`[data-element-id="${element.id}"]`);
     if (!element || !node) { paintAll(); return; }
     try { node.innerHTML = elementMarkup(element, sample, draft.origin, { barcodeSvg, layout: draft.layout }); node.setAttribute('transform', `translate(${element.x} ${element.y}) rotate(${element.rotation} ${element.w / 2} ${element.h / 2})`); selectionOverlay(); }
-    catch (error) { setStatus(error.message, true); }
+    catch (error) { setStatus(messageOf(error), true); }
   }
   function schedulePatch() { pendingPatch = true; if (!paintFrame) paintFrame = requestAnimationFrame(patchActive); }
   function add(type, text) {
@@ -233,12 +263,10 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
       if (!['image/png','image/jpeg','image/webp'].includes(file.type) || file.size > 2 * 1024 * 1024) throw new Error('请选择 2 MB 以内的 PNG/JPEG/WebP 图片。');
       const data = await new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = () => reject(new Error('本地图片读取失败。')); reader.readAsDataURL(file); });
       const image = await new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('图片内容无法识别。')); image.src = data; });
-      if (image.naturalWidth > 4096 || image.naturalHeight > 4096) throw new Error('图片宽高不能超过 4096 像素。');
-      const canvas = document.createElement('canvas'); canvas.width = image.naturalWidth; canvas.height = image.naturalHeight; canvas.getContext('2d').drawImage(image, 0, 0);
-      const src = canvas.toDataURL('image/png'); if (src.length > 2800000) throw new Error('转换后的图片过大，请缩小后重新导入。');
+      const src = importedImageSource(image, file.type, data);
       if (form.hidden || draft !== owner) return;
       if (mutate(() => { const element = newElement('image', draft.width, draft.height); element.src = src; element.h = roundMm(element.w * image.naturalHeight / image.naturalWidth); draft.elements.push(element); selected = element.id; })) setStatus('本地图片已嵌入，打印时自动转换为黑白。');
-    } catch (error) { setStatus(error.message, true); }
+    } catch (error) { setStatus(messageOf(error), true); }
   });
   function close() {
     if (saving) return; finishGesture(); if (paintFrame) cancelAnimationFrame(paintFrame); paintFrame = undefined; pendingPatch = false;
@@ -257,7 +285,7 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
       for (const key of ['name','width','height','origin']) draft[key] = ['width','height'].includes(key) ? Number($(`[name=${key}]`).value) : $(`[name=${key}]`).value;
       const template = localTemplate(draft); designSvg(template, sample, barcodeSvg); saving = true; $('#design-save').disabled = true; setStatus('正在保存模板…');
       await onSave(template); saving = false; close();
-    } catch (error) { saving = false; setStatus(`保存失败：${error.message}`, true); }
+    } catch (error) { saving = false; setStatus(`保存失败：${messageOf(error)}`, true); }
     finally { $('#design-save').disabled = false; }
   });
   form.addEventListener('keydown', event => {

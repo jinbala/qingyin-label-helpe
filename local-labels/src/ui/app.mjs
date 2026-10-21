@@ -10,6 +10,7 @@ import { mountTemplateDesigner } from './template-designer.mjs';
 import { previewDpi, previewViewport } from './preview-quality.mjs';
 import { createTemplateBackup, mergeTemplateBackup } from '../core/template-backup.mjs';
 import { STORAGE_BUDGET_BYTES, STORAGE_LIMIT_LABEL, settingsPayloadBytes, formatMegabytes } from '../core/footprint.mjs';
+import { messageOf } from '../core/errors.mjs';
 
 const SAMPLE = [
   { productSkuId: '9000000000001', productSkcId: '800000000001', labelCode: '53711398047', skuSpec: 'Black-L', skcSpec: 'Cotton', quantity: 2, sourceId: 'DEMO001', purchaseTime: 1729000000000 },
@@ -62,16 +63,18 @@ export async function mountLabelApp(services, stylesheet) {
     selected: 'local-default', layouts: {}, busy: false, version: 0, controller: null };
   // The selection listener lives as long as the page; it is released on unload.
   const clicks = new Map(); trackSelections(clicks);
-  let lastPath = location.pathname, returnFocus;
+  let lastPath = location.pathname, returnFocus, previewTimer, originTimer;
   const allTemplates = () => state.local;
   const chosen = () => allTemplates().find(template => template.id === state.selected);
   const sorted = () => sortRecords(state.records, $('#sort').value);
   const skuSeparators = () => $('#separators').checked;
   // The batch option is only offered once the loaded data spans several
   // 发货批次 (see updateCounts); the hidden checkbox never adds pages.
-  const batchSeparators = () => !$('#batch-separator-row').hidden && $('#batch-separators').checked;
+  // Batch boundaries only stay contiguous while printing in page order; under
+  // another sort the same batch is interleaved, so the option is disabled.
+  const batchSeparators = () => $('#sort').value === 'table' && !$('#batch-separator-row').hidden && $('#batch-separators').checked;
   const notice = (text, level = '') => { $('#notice').textContent = text; $('#notice').className = `notice ${level}`; };
-  const save = (overrides = {}) => services.saveSettings({ schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts, ...overrides });
+  const save = (overrides = {}, deletions = {}) => services.saveSettings({ schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts, ...overrides }, deletions);
   const savedSettings = async () => {
     const settings = services.readSettings ? await services.readSettings() : undefined;
     return settings?.templates?.length ? settings : { schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts };
@@ -85,8 +88,11 @@ export async function mountLabelApp(services, stylesheet) {
   };
   // Every template-library change lands here: persist, mirror the saved state,
   // drop caches that key on the selection, then refresh the preview once.
-  async function commit({ local = state.local, selected = state.selected, layouts = state.layouts, forget } = {}, message) {
-    await save({ templates: local, selected, layouts });
+  // Deletions must be passed explicitly; missing templates in `local` never
+  // imply a delete request (a partial load must not erase the library).
+  async function commit({ local = state.local, selected = state.selected, layouts = state.layouts, forget, deletedTemplates = [], deletedLayouts = [] } = {}, message) {
+    clearTimeout(originTimer);
+    await save({ templates: local, selected, layouts }, { templates: deletedTemplates, layouts: deletedLayouts });
     state.local = local; state.selected = selected; state.layouts = layouts;
     if (forget) layoutEditor.forget(forget);
     previewRendererCache = undefined;
@@ -122,11 +128,11 @@ export async function mountLabelApp(services, stylesheet) {
     onSave: async data => {
       const next = state.local.filter(template => template.id !== data.id); next.push(data);
       const layouts = { ...state.layouts }; delete layouts[data.id];
-      await commit({ local: next, selected: data.id, layouts, forget: data.id }, '可视化模板已保存在本机。');
+      await commit({ local: next, selected: data.id, layouts, forget: data.id, deletedLayouts: [data.id] }, '可视化模板已保存在本机。');
     },
   });
   const on = (id, action, event = 'click') => $(id).addEventListener(event, async e => {
-    try { await action(e); } catch (error) { if (error.name !== 'AbortError') notice(error.message, 'error'); }
+    try { await action(e); } catch (error) { if (error.name !== 'AbortError') notice(messageOf(error), 'error'); }
   });
 
   function updateButtons() {
@@ -165,15 +171,17 @@ export async function mountLabelApp(services, stylesheet) {
 
   function updateCounts() {
     // The batch separator only makes sense when the loaded data spans several
-    // 发货批次; hide and reset the choice otherwise.
+    // 发货批次 and is printed in page order; hide and reset it otherwise.
     const multipleBatches = new Set(state.records.map(record => record.batchRank ?? 0)).size > 1;
+    const batchOrdered = $('#sort').value === 'table';
     $('#batch-separator-row').hidden = !multipleBatches;
-    if (!multipleBatches) $('#batch-separators').checked = false;
+    if (!multipleBatches || !batchOrdered) $('#batch-separators').checked = false;
     let text = `${state.records.length} 项 SKU`;
     if (state.records.length) {
       try { text += ` · ${makeJobs(state.records, skuSeparators(), batchSeparators()).pages} 张（含提示页）`; }
-      catch (error) { text += ` · ${error.message}`; }
+      catch (error) { text += ` · ${messageOf(error)}`; }
     }
+    if (multipleBatches && !batchOrdered) text += ' · 批次提示页仅在“页面 / 输入顺序”下可用';
     $('#count').textContent = text; updateButtons();
   }
 
@@ -184,8 +192,9 @@ export async function mountLabelApp(services, stylesheet) {
       const card = element('button', 'template-card'); card.type = 'button'; card.setAttribute('aria-pressed', String(state.selected === template.id));
       card.append(element('strong', '', template.name), element('span', '', `${template.width} × ${template.height} mm · 本地`));
       card.addEventListener('click', () => {
+        clearTimeout(originTimer);
         state.selected = template.id; $('#origin').value = template.origin ?? 'China'; renderTemplates(); refreshPreview();
-        save().catch(error => notice(`模板选择未保存：${error.message}`, 'warn'));
+        save().catch(error => notice(`模板选择未保存：${messageOf(error)}`, 'warn'));
       });
       grid.append(card);
     }
@@ -223,7 +232,7 @@ export async function mountLabelApp(services, stylesheet) {
       previewDialog.paint(canvas);
       $('#preview-caption').textContent = `${template.width} × ${template.height} mm · SKU ${record.productSkuId} · 点击放大调整`;
     } catch (error) {
-      if (isCurrent() && error.name !== 'AbortError') { previewRendererCache = undefined; empty(`预览失败：${error.message}`); }
+      if (isCurrent() && error.name !== 'AbortError') { previewRendererCache = undefined; empty(`预览失败：${messageOf(error)}`); }
     } finally { if (isCurrent()) $('#preview').setAttribute('aria-busy', 'false'); }
   }
 
@@ -249,7 +258,7 @@ export async function mountLabelApp(services, stylesheet) {
       notice(result.warnings.length ? result.warnings.join('\n') : `已读取 ${result.records.length} 项 SKU，请核对数量、规格和模板内容。`, result.warnings.length ? 'warn' : '');
       renderRows(); await refreshPreview();
     } catch (error) {
-      if (version === state.version) notice(error.name === 'AbortError' ? '已取消读取，未保留未完成的数据。' : error.message, error.name === 'AbortError' ? '' : 'error');
+      if (version === state.version) notice(error.name === 'AbortError' ? '已取消读取，未保留未完成的数据。' : messageOf(error), error.name === 'AbortError' ? '' : 'error');
     } finally { if (state.controller === controller) { state.controller = null; busy(false, '就绪'); } }
   }
 
@@ -280,20 +289,46 @@ export async function mountLabelApp(services, stylesheet) {
   on('#mall', () => { if (!state.records.length && !state.warnings.length) return; clearRecords(); notice('店铺已改变，请重新读取商品数据。'); }, 'input');
   on('#sort', () => { renderRows(); refreshPreview(); }, 'change');
   on('#separators', updateCounts, 'change'); on('#batch-separators', updateCounts, 'change'); on('#ack', updateButtons, 'change');
-  let previewTimer;
-  on('#origin', () => { clearTimeout(previewTimer); previewTimer = setTimeout(refreshPreview, 250); }, 'input');
+  on('#origin', () => {
+    clearTimeout(previewTimer); previewTimer = setTimeout(refreshPreview, 250);
+    clearTimeout(originTimer);
+    const templateId = state.selected;
+    // Persist the per-template origin after typing stops. A selection change
+    // cancels this because the input then belongs to another template.
+    originTimer = setTimeout(async () => {
+      const template = state.local.find(item => item.id === templateId);
+      if (!template || state.selected !== templateId) return;
+      const origin = $('#origin').value.trim();
+      if ((template.origin ?? 'China') === origin) return;
+      const next = state.local.map(item => item.id === templateId ? { ...item, origin } : item);
+      try { await commit({ local: next }); }
+      catch (error) { notice(`产地未保存：${messageOf(error)}`, 'warn'); }
+    }, 400);
+  }, 'input');
   on('#new-template', () => openEditor());
   on('#edit-template', () => { if (chosen()) openEditor(chosen()); });
   on('#delete-template', async () => {
     if (!state.local.some(template => template.id === state.selected) || state.local.length <= 1) return;
-    const next = state.local.filter(template => template.id !== state.selected);
-    await commit({ local: next, selected: next[0].id });
+    const removed = state.selected;
+    const next = state.local.filter(template => template.id !== removed);
+    const layouts = { ...state.layouts }; delete layouts[removed];
+    await commit({ local: next, selected: next[0].id, layouts, forget: removed, deletedTemplates: [removed], deletedLayouts: [removed] });
   });
   on('#import-template', () => $('#template-file').click());
   on('#backup-templates', async () => {
-    const backup = createTemplateBackup(await savedSettings());
+    const settings = await savedSettings(), templates = [];
+    for (const value of Array.isArray(settings.templates) ? settings.templates : []) {
+      try { templates.push(localTemplate(value)); } catch { /* Reported below; never block exporting the readable rest. */ }
+    }
+    if (!templates.length) throw new Error('存储中没有可导出的有效模板，请先导入备份或重新创建模板。');
+    const layouts = {};
+    for (const template of templates) {
+      if (!Object.hasOwn(settings.layouts || {}, template.id)) continue;
+      try { layouts[template.id] = normalizeLayout(settings.layouts[template.id], template.width, template.height); } catch { /* Keep the template without its unreadable position. */ }
+    }
+    const backup = createTemplateBackup({ ...settings, templates, layouts }), skipped = (settings.templates || []).length - templates.length;
     downloadJson(backup, `轻印模板备份-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
-    notice(`已发起备份下载：${backup.settings.templates.length} 个模板及已保存的位置。请保留下载的 JSON 文件，换目录或重装后可用“导入备份”恢复。`);
+    notice(`已发起备份下载：${backup.settings.templates.length} 个模板及已保存的位置。${skipped ? `已跳过 ${skipped} 个无法读取的条目。` : ''}请保留下载的 JSON 文件，换目录或重装后可用“导入备份”恢复。`, skipped ? 'warn' : '');
   });
   on('#restore-templates', () => $('#backup-file').click());
   on('#backup-file', async () => {
@@ -332,7 +367,7 @@ export async function mountLabelApp(services, stylesheet) {
       notice(`已生成 ${result.pages} 张标签，并打开 PDF 预览。请核对后点击打印。`);
       $('#progress-text').textContent = `PDF 已生成 · ${result.pages} 张`;
     } catch (error) {
-      notice(error.name === 'AbortError' ? '已取消生成 PDF。' : `生成或打开预览失败：${error.message}`, error.name === 'AbortError' ? '' : 'error');
+      notice(error.name === 'AbortError' ? '已取消生成 PDF。' : `生成或打开预览失败：${messageOf(error)}`, error.name === 'AbortError' ? '' : 'error');
       $('#progress-text').textContent = '未完成';
     } finally { state.controller = null; busy(false); }
   });
@@ -361,17 +396,47 @@ export async function mountLabelApp(services, stylesheet) {
     else if (!event.shiftKey && root.activeElement === last) { event.preventDefault(); first?.focus(); }
   });
 
+  const templateLabel = value => {
+    const name = value && typeof value === 'object' ? String(value.name || value.id || '') : '';
+    return name ? name.slice(0, 60) : '未命名模板';
+  };
   try {
     const settings = await services.loadSettings();
-    if (settings.migrationNotice) notice(settings.migrationNotice, 'warn');
+    const rawTemplates = Array.isArray(settings.templates) ? settings.templates : [];
+    // Validate one item at a time: a single stale template must not discard the
+    // whole library, and skipped entries stay in storage untouched.
+    const restored = [], skipped = [];
+    for (const value of rawTemplates) {
+      try { restored.push(localTemplate(value)); }
+      catch (error) { skipped.push(`模板「${templateLabel(value)}」：${messageOf(error)}`); }
+    }
+    const layouts = {};
     if (settings.layouts && typeof settings.layouts === 'object' && !Array.isArray(settings.layouts)) {
-      state.layouts = Object.fromEntries(Object.entries(settings.layouts).map(([key, layout]) => [key, normalizeLayout(layout)]));
+      const byId = new Map(restored.map(template => [template.id, template]));
+      for (const [id, layout] of Object.entries(settings.layouts)) {
+        const template = byId.get(id);
+        if (!template) continue; // belongs to a skipped or missing template; leave it untouched
+        try { layouts[id] = normalizeLayout(layout, template.width, template.height); }
+        catch (error) { skipped.push(`模板「${template.name || template.id}」的位置：${messageOf(error)}`); }
+      }
     }
-    if (Array.isArray(settings.templates) && settings.templates.length) {
-      const restored = settings.templates.map(localTemplate);
-      state.local = restored; state.selected = restored.some(template => template.id === settings.selected) ? settings.selected : restored[0].id;
+    if (restored.length) {
+      state.local = restored;
+      state.selected = restored.some(template => template.id === settings.selected) ? settings.selected : restored[0].id;
+      state.layouts = layouts;
+      // Compare future saves against what this page actually shows; skipped
+      // entries are never turned into implicit deletions.
+      services.adoptBaseline?.({ schema: SETTINGS_SCHEMA, templates: state.local, selected: state.selected, layouts: state.layouts });
     }
-  } catch (error) { notice(`本地模板读取失败，已使用默认模板：${error.message}`, 'warn'); }
+    const notes = [];
+    if (settings.migrationNotice) notes.push(settings.migrationNotice);
+    if (skipped.length) {
+      notes.push(`本地模板有 ${skipped.length} 项无法读取，已跳过并保留原数据：${skipped.slice(0, 3).join('；')}${skipped.length > 3 ? '…' : ''}。建议先用“备份全部模板”另存现有数据。`);
+    }
+    if (notes.length) notice(notes.join('\n'), 'warn');
+  } catch (error) {
+    notice(`本地模板读取失败，已保留原数据：${messageOf(error)}。请刷新页面后重试，或先恢复备份。`, 'warn');
+  }
   $('#origin').value = chosen()?.origin ?? 'China';
   renderRows(); renderTemplates();
   const refreshRoute = () => {

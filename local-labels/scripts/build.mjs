@@ -157,7 +157,7 @@ try {
     unpacked_manifest_resources_verified: true,
     sha256: createHash('sha256').update(bytes).digest('hex'), files: names.length,
     archive_verified: true, standalone: true, legacy_runtime_included: false, verification,
-    automated_test_command: 'npm.cmd --prefix local-labels/tests test',
+    automated_test_command: 'npm --prefix local-labels/tests test',
     real_browser_verified: false, real_account_verified: false, physical_print_verified: false,
     live_coexistence_verified: false,
   };

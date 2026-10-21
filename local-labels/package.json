@@ -6,7 +6,7 @@
   "scripts": {
     "check": "node scripts/check.mjs",
     "test": "npm --prefix tests test",
-    "coverage": "c8 --all --include=\"src/**\" --reporter=text-summary --reporter=text node --test tests/compliance-label.test.mjs tests/compliance-label-dom.test.mjs tests/page-api.test.mjs tests/layout.test.mjs tests/preview-scheduler.test.mjs tests/preview-quality.test.mjs tests/settings-store.test.mjs tests/template-backup.test.mjs tests/template-designer.test.mjs tests/barcode-margin.test.mjs tests/standalone.test.mjs",
+    "coverage": "c8 --all --include=\"src/**\" --reporter=text-summary --reporter=text node --test tests/compliance-label.test.mjs tests/compliance-label-dom.test.mjs tests/page-api.test.mjs tests/layout.test.mjs tests/preview-scheduler.test.mjs tests/preview-quality.test.mjs tests/settings-store.test.mjs tests/template-backup.test.mjs tests/template-designer.test.mjs tests/barcode-margin.test.mjs tests/standalone.test.mjs tests/loader.test.mjs tests/popup.test.mjs",
     "build": "node scripts/build.mjs",
     "format": "prettier --write \"src/**/*.{mjs,css,html}\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{mjs,css,html}\" \"scripts/**/*.mjs\""

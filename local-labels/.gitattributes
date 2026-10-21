@@ -1,0 +1,13 @@
+# Keep source and packaged files byte-identical across checkouts and platforms.
+# Vendored libraries are minified single-line files, so this does not change
+# their checksums, but it keeps the built ZIP deterministic.
+* text=auto eol=lf
+*.mjs text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.svg text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf

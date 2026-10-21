@@ -64,7 +64,13 @@ export function requestInPage(config) {
       if (event.data.error) reject(new Error(event.data.error)); else resolve(event.data.result);
     };
     const timer = setTimeout(() => { window.postMessage({ type: 'QINGYIN_LABEL_API_CANCEL_V1', id }, location.origin); fail(new Error('TEMU 请求超时，请稍后重试。')); }, 50000);
-    const ackTimer = setTimeout(() => { if (!acknowledged) fail(new Error('页面通信模块未就绪，请重新加载扩展并刷新商家后台。')); }, 2000);
+    const ackTimer = setTimeout(() => {
+      if (acknowledged) return;
+      // The request may already be queued in the page's main thread even
+      // though its acknowledgement missed our deadline; cancel it explicitly.
+      window.postMessage({ type: 'QINGYIN_LABEL_API_CANCEL_V1', id }, location.origin);
+      fail(new Error('页面通信模块未就绪，请重新加载扩展并刷新商家后台。'));
+    }, 2000);
     window.addEventListener('message', receive);
     config.signal?.addEventListener('abort', abort, { once: true });
     window.postMessage({ type: 'QINGYIN_LABEL_API_REQUEST_V1', id, url: config.url, mallId: config.headers.MallId, data: config.data }, location.origin);

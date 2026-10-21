@@ -6,17 +6,29 @@ const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 // JSON comparison is only needed for the few objects a page actually replaced.
 const unchanged = (left, right) => left === right || same(left, right);
 const keyed = values => new Map((values || []).map(value => [value.id, value]));
+// Copy the containers, never the templates themselves: every writer replaces
+// template objects instead of mutating them, so keeping their identity is what
+// lets unchanged() skip serialising multi-megabyte embedded images.
+const snapshotOf = settings => ({
+  ...settings,
+  templates: Array.isArray(settings.templates) ? [...settings.templates] : settings.templates,
+  layouts: settings.layouts && typeof settings.layouts === 'object' ? { ...settings.layouts } : settings.layouts,
+});
 
 export function createSettingsClient(request) {
   let baseline, pending = Promise.resolve();
   return {
-    async loadSettings() { const settings = await request('load'); baseline = structuredClone(settings); return settings; },
+    async loadSettings() { const settings = await request('load'); baseline = snapshotOf(settings); return settings; },
     readSettings() { return pending.catch(() => {}).then(() => request('load')); },
-    saveSettings(settings) {
-      const snapshot = structuredClone(settings);
+    // The panel validates and filters what it loaded. Adopting that state as
+    // the comparison baseline lets reference equality work from the first save
+    // without treating skipped storage entries as deleted.
+    adoptBaseline(settings) { baseline = snapshotOf(settings); },
+    saveSettings(settings, deletions = {}) {
+      const snapshot = snapshotOf(settings);
       const job = pending.catch(() => {}).then(async () => {
         if (!baseline) throw new Error('本地模板尚未读取成功，请刷新后再保存。');
-        await request('save', settingsPatch(baseline, snapshot));
+        await request('save', settingsPatch(baseline, snapshot, deletions));
         // This page must not delete templates it has not seen in other tabs.
         baseline = snapshot;
       });
@@ -26,17 +38,21 @@ export function createSettingsClient(request) {
 }
 
 // Send changes made by this page, never its potentially stale whole library.
-export function settingsPatch(previous = {}, next = {}) {
+// Deletions are explicit: a page that failed to parse part of the library must
+// never turn that into a delete request for everything it did not see.
+export function settingsPatch(previous = {}, next = {}, deletions = {}) {
   const patch = {};
   if (Array.isArray(next.templates)) {
     const before = keyed(previous.templates), after = keyed(next.templates);
     patch.templates = [...after.values()].filter(template => !unchanged(before.get(template.id), template));
-    patch.deletedTemplates = [...before.keys()].filter(id => !after.has(id));
+    const removed = new Set((deletions.templates || []).map(String));
+    patch.deletedTemplates = [...before.keys()].filter(id => removed.has(String(id)) && !after.has(id));
   }
   if (next.layouts) {
     const before = new Map(Object.entries(previous.layouts || {})), after = new Map(Object.entries(next.layouts));
     patch.layouts = Object.fromEntries([...after].filter(([id, layout]) => !unchanged(before.get(id), layout)));
-    patch.deletedLayouts = [...before.keys()].filter(id => !after.has(id));
+    const removed = new Set((deletions.layouts || []).map(String));
+    patch.deletedLayouts = [...before.keys()].filter(id => removed.has(String(id)) && !after.has(id));
   }
   if (next.selected !== undefined && next.selected !== previous.selected) patch.selected = next.selected;
   return patch;

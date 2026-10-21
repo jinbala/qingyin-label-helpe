@@ -127,3 +127,16 @@ test('设计器输出按 300/600 DPI 渲染，变量生效且黑白 PDF 与同 D
   const image = images.lookup(images.keys()[0], PDFLib.PDFRawStream);
   assert.deepEqual(new Uint8Array(inflateSync(image.contents)), toMonochrome(canvas).packed);
 });
+
+test('JPEG 图片保留原格式，不再强制转换成 PNG', async () => {
+  const f = fixture(); f.designer.open();
+  const canvas = document.createElement('canvas'); canvas.width = 12; canvas.height = 8;
+  const context = canvas.getContext('2d'); context.fillStyle = '#c33'; context.fillRect(0, 0, 12, 8);
+  const bytes = Buffer.from(canvas.toDataURL('image/jpeg', .9).split(',')[1], 'base64');
+  const input = f.$('#design-image');
+  Object.defineProperty(input, 'files', { configurable: true, value: [new window.File([bytes], 'photo.jpg', { type: 'image/jpeg' })] });
+  event(input, 'change'); await wait(() => f.$('#design-paper image'));
+  assert.match(f.$('#design-paper image').getAttribute('xlink:href'), /^data:image\/jpeg;base64,/);
+  assert.equal(f.$('#design-alert').hidden, true);
+  f.host.remove();
+});

@@ -2,6 +2,7 @@ import { makeJobs, validateTemplate } from '../core/core.mjs';
 import { normalizeLayout, isDefaultAdjustment } from '../core/layout.mjs';
 import { designVariables } from '../core/design.mjs';
 import { designSvg } from './design-svg.mjs';
+import { encodeCode128 } from './code128.mjs';
 import { fitLines } from './text-fit.mjs';
 import { defaultBarcodeBox, BARCODE_FRAME_MM } from '../core/label-geometry.mjs';
 
@@ -49,7 +50,7 @@ export function barcodeSvg(record, origin, JsBarcode = globalThis.JsBarcode, { l
   // a CODE128 slot with ten-module quiet zones, and a footer row.
   const width = BARCODE_VIEW_WIDTH, height = BARCODE_VIEW_HEIGHT, barsTop = 46, barsHeight = 106;
   const barcode = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  JsBarcode(barcode, String(record.labelCode), { format: 'CODE128', width: 1, height: barsHeight, margin: 0, displayValue: false });
+  encodeCode128(barcode, record.labelCode, { format: 'CODE128', width: 1, height: barsHeight, margin: 0, displayValue: false }, JsBarcode);
   const bars = barcode.querySelector('g');
   const barsWidth = parseFloat(barcode.getAttribute('width'));
   if (!bars || !Number.isFinite(barsWidth) || barsWidth < 1 || barsWidth > 2000) throw new Error('条码尺寸无效或内容过长。');
@@ -98,7 +99,7 @@ function renderSeparator(template, dpi) {
   let size = Math.min(height * 0.24, 12 * mm);
   const setFont = value => { context.font = `bold ${value.toFixed(2)}px ${FONT}`; };
   setFont(size);
-  while (size > 2 * mm && context.measureText(text).width > maxWidth) { size *= 0.95; setFont(size); }
+  while (size > 1 * mm && context.measureText(text).width > maxWidth) { size *= 0.95; setFont(size); }
   context.textAlign = 'center'; context.textBaseline = 'middle';
   context.fillText(text, width / 2, height / 2);
   return canvas;
@@ -113,11 +114,15 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   const context = canvas.getContext('2d', { willReadFrequently: true });
   context.fillStyle = 'white'; context.fillRect(0, 0, canvas.width, canvas.height);
   context.fillStyle = 'black'; context.textBaseline = 'top';
-  const margin = 2 / 25.4 * dpi, usableWidth = canvas.width - margin * 2;
+  const content = layout.parts.content, contentScale = content.scale / 100;
+  // The context is scaled below, so wrapping and the height check must work in
+  // the same scaled coordinate space; otherwise 120–150% clips the text.
+  const margin = 2 / 25.4 * dpi;
+  const usableWidth = (canvas.width - margin * 2) / contentScale;
   const fields = [template.productName, template.manufacturer && `Manufacturer: ${template.manufacturer}`,
     template.address, template.responsiblePerson && `Responsible person: ${template.responsiblePerson}`,
     template.contact, template.warning].filter(Boolean).map(text => designVariables(text, record, template.origin));
-  const textHeight = canvas.height * 0.48 - margin;
+  const textHeight = (canvas.height * 0.48 - margin) / contentScale;
   let size = Math.max(12, dpi / 15), lines;
   do {
     context.font = `${size}px ${FONT}`;
@@ -127,8 +132,7 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   } while (size >= dpi / 28);
   if (lines.length * size * 1.35 > textHeight) throw new Error('模板文字超出标签上半区，请减少文字或增大纸张尺寸。');
   context.save();
-  const content = layout.parts.content;
-  context.translate(content.x / 25.4 * dpi, content.y / 25.4 * dpi); context.scale(content.scale / 100, content.scale / 100);
+  context.translate(content.x / 25.4 * dpi, content.y / 25.4 * dpi); context.scale(contentScale, contentScale);
   lines.forEach((line, index) => context.fillText(line, margin, margin + index * size * 1.35));
   context.restore();
   // The region occupies the fixed 700 x 185 barcode coordinate space, so its
@@ -158,9 +162,8 @@ async function renderDesign(template, record, config, images) {
   const paintVectors = async elements => {
     if (!elements.length) return;
     config.signal?.throwIfAborted();
-    const svg = designSvg({ ...template, elements }, record, barcodeSvg)
-      .replace(`width="${template.width}" height="${template.height}"`, `width="${width}" height="${height}"`)
-      .replace('<rect width="100%" height="100%" fill="white"/>', '');
+    const svg = designSvg({ ...template, elements }, record, barcodeSvg, { background: false })
+      .replace(`width="${template.width}" height="${template.height}"`, `width="${width}" height="${height}"`);
     const url = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }));
     try { context.drawImage(await imageFromUrl(url, config.signal), 0, 0, width, height); }
     finally { URL.revokeObjectURL(url); }
@@ -239,8 +242,9 @@ export async function embedMonochrome(pdf, image) {
   const writer = compressor.writable.getWriter();
   const compressed = new Response(compressor.readable).arrayBuffer();
   await writer.write(image.packed); await writer.close();
+  const payload = new Uint8Array(await compressed);
   const dictionary = pdf.context.obj({ Type: 'XObject', Subtype: 'Image', Width: image.width, Height: image.height, ColorSpace: 'DeviceGray', BitsPerComponent: 1, Filter: 'FlateDecode' });
-  return pdf.context.register(globalThis.PDFLib.PDFRawStream.of(dictionary, new Uint8Array(await compressed)));
+  return { ref: pdf.context.register(globalThis.PDFLib.PDFRawStream.of(dictionary, payload)), bytes: payload.length };
 }
 
 export function appendImagePage(pdf, imageRef, widthMm, heightMm) {
@@ -249,15 +253,42 @@ export function appendImagePage(pdf, imageRef, widthMm, heightMm) {
   page.pushOperators(lib.pushGraphicsState(), lib.concatTransformationMatrix(width, 0, 0, height, 0, 0), lib.drawObject(name), lib.popGraphicsState());
 }
 
+// The message channel refuses PDFs over 12 MB. Estimate before rendering so a
+// large run fails in milliseconds instead of minutes, then keep checking the
+// real compressed size while embedding as a hard guarantee.
+export const PDF_LIMIT_BYTES = 12 * 1024 * 1024;
+export const PDF_PREFLIGHT_BYTES = 10 * 1024 * 1024;
+export const PDF_BUILD_BUDGET_BYTES = 11.5 * 1024 * 1024;
+const PAGE_OVERHEAD_BYTES = 200;
+const megabyte = bytes => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+const LIMIT_HINT = '请减少不同 SKU 的数量、改用 300 DPI，或分批打印。';
+
+const labelKey = record => JSON.stringify([record.labelCode, record.productSkuId, record.productSkcId, record.fulfilmentProductSkuId, record.skuExtCode, record.skuSpec, record.skcSpec, record.sourceId]);
+
+export function estimatePdfBytes(template, jobs, pages, dpi) {
+  const unique = new Set();
+  for (const job of jobs) unique.add(job.separator ? 'separator' : labelKey(job.record));
+  const pixels = Math.ceil(template.width / 25.4 * dpi) * Math.ceil(template.height / 25.4 * dpi);
+  const hasImages = template.kind === 'design' && (template.elements || []).some(element => element.type === 'image' && element.visible !== false);
+  // Measured on simple labels: ~2.7 KB at 300 DPI and ~5.8 KB at 600 DPI.
+  // Photo-heavy designs are bounded by their packed bitmap because dithered
+  // noise barely compresses.
+  const perLabel = hasImages ? Math.ceil(pixels / 8 * .85) : dpi === 600 ? 7 * 1024 : 3.5 * 1024;
+  return Math.ceil(unique.size * perLabel * 1.3 + pages * PAGE_OVERHEAD_BYTES);
+}
+
 export async function generatePdf({ records, template, separators = false, batchSeparators = false, dpi = 300, signal, onProgress = () => {} }) {
   template = validateTemplate(template);
-  if (![300, 600].includes(Number(dpi))) throw new Error('请选择 300 或 600 DPI。');
+  dpi = Number(dpi);
+  if (![300, 600].includes(dpi)) throw new Error('请选择 300 或 600 DPI。');
   const { jobs, pages } = makeJobs(records, separators, batchSeparators);
+  const estimate = estimatePdfBytes(template, jobs, pages, dpi);
+  if (estimate > PDF_PREFLIGHT_BYTES) throw new Error(`PDF 体积预计约 ${megabyte(estimate)}，超过 12 MB 上限。${LIMIT_HINT}`);
   const render = await createLabelRenderer(template, { signal });
   const pdf = await globalThis.PDFLib.PDFDocument.create();
   pdf.setTitle('合规标签'); pdf.setCreator('轻印标签助手');
   const cache = new Map();
-  let completed = 0, lastYield = Date.now();
+  let completed = 0, embedded = 0, lastYield = Date.now(), lastProgress = -1, lastProgressAt = 0;
   // Yield on a time budget instead of once per job: a timer round trip costs up
   // to 4 ms in a browser once nesting kicks in, which adds up over large runs.
   const breathe = async () => {
@@ -265,13 +296,25 @@ export async function generatePdf({ records, template, separators = false, batch
     signal?.throwIfAborted();
     await yieldFrame(); lastYield = Date.now();
   };
+  // Updating the DOM once per job can mean ten thousand writes on large runs.
+  const report = () => {
+    const percent = Math.min(95, Math.round(completed / pages * 95)), now = Date.now();
+    if (completed < pages && (percent === lastProgress || now - lastProgressAt < 100)) return;
+    lastProgress = percent; lastProgressAt = now;
+    onProgress({ percent, completed, pages });
+  };
   for (const job of jobs) {
     signal?.throwIfAborted();
     const { record } = job;
-    const key = job.separator ? 'separator' : JSON.stringify([record.labelCode, record.productSkuId, record.productSkcId, record.fulfilmentProductSkuId, record.skuExtCode, record.skuSpec, record.skcSpec, record.sourceId]);
+    const key = job.separator ? 'separator' : labelKey(record);
     if (!cache.has(key)) {
       const canvas = await render(record, { dpi, separator: job.separator, signal });
-      cache.set(key, await embedMonochrome(pdf, toMonochrome(canvas)));
+      const embeddedImage = await embedMonochrome(pdf, toMonochrome(canvas));
+      embedded += embeddedImage.bytes;
+      if (embedded + (completed + job.quantity) * PAGE_OVERHEAD_BYTES > PDF_BUILD_BUDGET_BYTES) {
+        throw new Error(`PDF 体积已超过 12 MB（约 ${megabyte(embedded)}），生成已停止。${LIMIT_HINT}`);
+      }
+      cache.set(key, embeddedImage.ref);
       canvas.width = 1; canvas.height = 1;
     }
     for (let i = 0; i < job.quantity; i++) {
@@ -279,7 +322,7 @@ export async function generatePdf({ records, template, separators = false, batch
       completed++;
       if (completed % 50 === 0) await breathe();
     }
-    onProgress({ percent: Math.round(completed / pages * 95), completed, pages });
+    report();
     await breathe();
   }
   signal?.throwIfAborted();

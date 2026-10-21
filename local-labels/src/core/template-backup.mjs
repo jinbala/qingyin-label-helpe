@@ -4,9 +4,9 @@ import { normalizeLayout } from './layout.mjs';
 export const BACKUP_SCHEMA = 'qingyin-template-backup/v1';
 
 function checkedSettings(value) {
-  if (!value || !Array.isArray(value.templates) || !value.templates.length || value.templates.length > 500) throw new Error('备份需包含 1–500 个轻印本地模板。');
+  if (!value || !Array.isArray(value.templates) || !value.templates.length) throw new Error('备份需包含至少 1 个轻印本地模板。');
   if (value.layouts !== undefined && (!value.layouts || typeof value.layouts !== 'object' || Array.isArray(value.layouts))) throw new Error('备份的位置设置格式无效。');
-  const templates = value.templates.map(localTemplate), seen = new Set(), layouts = [];
+  const templates = value.templates.map(template => localTemplate(template)), seen = new Set(), layouts = [];
   for (const template of templates) {
     if (typeof template.id !== 'string' || !/^[\w-]{1,160}$/.test(template.id)) throw new Error('备份的模板编号无效。');
     if (seen.has(template.id)) throw new Error('备份中有重复的模板编号。');

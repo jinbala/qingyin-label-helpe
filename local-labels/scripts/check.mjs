@@ -48,7 +48,9 @@ export async function check() {
       const source = await readFile(file, 'utf8');
       if (file.startsWith(path.join(moduleRoot, 'src') + path.sep) && /message-service-KeDETzND|new WebSocket|127\.0\.0\.1:10020|__LF_PLUGIN_ACTIVE__|__LF_INTERCEPTOR_PROXY__/.test(source)) throw new Error(`Legacy runtime dependency: ${file}`);
       for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*)['"](\.[^'"]+)['"]/g)) {
-        const dependency = path.resolve(path.dirname(file), match[1]);
+        // Test files add cache-busting queries such as `?case=stale`; the
+        // specifier still points at the same local file.
+        const dependency = path.resolve(path.dirname(file), match[1].replace(/[?#].*$/, ''));
         if (file.startsWith(path.join(moduleRoot, 'src') + path.sep) && !dependency.startsWith(moduleRoot + path.sep)) throw new Error(`Runtime import leaves standalone directory: ${file}`);
         await required(dependency);
       }

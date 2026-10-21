@@ -1,5 +1,6 @@
 import { designVariables, DESIGN_SAMPLE } from '../core/design.mjs';
 import { normalizeLayout } from '../core/layout.mjs';
+import { encodeCode128 } from './code128.mjs';
 import { fitLines } from './text-fit.mjs';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]);
@@ -26,7 +27,7 @@ export function elementMarkup(element, record = DESIGN_SAMPLE, origin = 'China',
   }
   if (type === 'code') {
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    globalThis.JsBarcode(svg, designVariables(element.text, record, origin), { format: 'CODE128', width: 1, height: 50, margin: 10, displayValue: false });
+    encodeCode128(svg, designVariables(element.text, record, origin), { format: 'CODE128', width: 1, height: 50, margin: 10, displayValue: false });
     svg.setAttribute('viewBox', `0 0 ${parseFloat(svg.getAttribute('width'))} ${parseFloat(svg.getAttribute('height'))}`);
     svg.setAttribute('width', w); svg.setAttribute('height', h); svg.setAttribute('preserveAspectRatio', 'none');
     return new XMLSerializer().serializeToString(svg);
@@ -46,9 +47,9 @@ export function elementMarkup(element, record = DESIGN_SAMPLE, origin = 'China',
   return '';
 }
 
-export function designSvg(template, record, barcodeSvg, { editing = false } = {}) {
+export function designSvg(template, record, barcodeSvg, { background = true } = {}) {
   const layout = normalizeLayout(template.layout, template.width, template.height);
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${template.width}" height="${template.height}" viewBox="0 0 ${template.width} ${template.height}"><rect width="100%" height="100%" fill="white"/>${template.elements.filter(element => element.visible).map(element => {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${template.width}" height="${template.height}" viewBox="0 0 ${template.width} ${template.height}">${background ? '<rect width="100%" height="100%" fill="white"/>' : ''}${template.elements.filter(element => element.visible).map(element => {
     const part = layout.parts[['barcode', 'code'].includes(element.type) ? 'barcode' : 'content'];
     return `<g transform="translate(${part.x} ${part.y}) scale(${part.scale / 100})"><g data-element-id="${element.id}" transform="translate(${element.x} ${element.y}) rotate(${element.rotation} ${element.w / 2} ${element.h / 2})">${elementMarkup(element, record, template.origin, { barcodeSvg, layout })}</g></g>`;
   }).join('')}</svg>`;

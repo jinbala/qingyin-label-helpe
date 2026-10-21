@@ -4,7 +4,7 @@ import { inflateSync } from 'node:zlib';
 import PDFLib from '../vendor/pdf-lib.min.js';
 import { splitIds, compareIds, sortRecords, makeJobs, validateTemplate, fetchLabels } from '../src/core/core.mjs';
 import { localTemplate, defaultTemplates, TEMPLATE_SCHEMA } from '../src/core/templates.mjs';
-import { toMonochrome, embedMonochrome, appendImagePage } from '../src/printing/render.mjs';
+import { toMonochrome, embedMonochrome, appendImagePage, generatePdf, estimatePdfBytes, PDF_PREFLIGHT_BYTES } from '../src/printing/render.mjs';
 
 globalThis.PDFLib = PDFLib;
 const origin = 'https://seller.kuajingmaihuo.com';
@@ -147,7 +147,7 @@ test('黑白打包使用逐行补齐；透明像素铺白；PDF 为正确毫米�
   const image = toMonochrome({ width: 9, height: 2, getContext: () => ({ getImageData: () => ({ data: rgba }) }) });
   assert.deepEqual([...image.packed], [127, 255, 127, 255]);
   const pdf = await PDFLib.PDFDocument.create();
-  const ref = await embedMonochrome(pdf, image);
+  const { ref } = await embedMonochrome(pdf, image);
   appendImagePage(pdf, ref, 60, 40); appendImagePage(pdf, ref, 60, 40);
   const bytes = await pdf.save(), loaded = await PDFLib.PDFDocument.load(bytes);
   assert.equal(loaded.getPageCount(), 2);
@@ -155,4 +155,24 @@ test('黑白打包使用逐行补齐；透明像素铺白；PDF 为正确毫米�
   const stream = pdf.context.lookup(ref);
   assert.equal(stream.dict.get(PDFLib.PDFName.of('BitsPerComponent')).asNumber(), 1);
   assert.deepEqual([...inflateSync(stream.getContents())], [...image.packed]);
+});
+
+test('翻译接口失败时保留中文规格并给出提示', async () => {
+  const result = await fetchLabels({ type: 'sku', ids: ['1001'], mallId: '123', origin, request: async config => {
+    if (config.url.endsWith('/pageQuery')) return { success: true, result: { pageItems: [{ labelCodeVO: { productSkuId: '1001', productSkcId: '200', labelCode: '1231001' }, productSkuSpecI18nMap: { zh: [{ specName: '黑色' }] } }] } };
+    throw new Error('翻译服务不可用');
+  } });
+  assert.equal(result.records[0].skuSpec, '黑色');
+  assert.match(result.warnings.join(''), /翻译失败/);
+});
+
+test('PDF 体积在渲染前按唯一标签数预检', async () => {
+  const records = Array.from({ length: 5000 }, (_, index) => ({
+    productSkuId: String(9000000000000 + index), productSkcId: '1', labelCode: String(50000000000 + index),
+    skuSpec: 'Black-L', skcSpec: 'Cotton', sourceId: `S${index}`, quantity: 1,
+  }));
+  const template = { schema: 'qingyin-template/v1', kind: 'simple', id: 'estimate', name: '预检', width: 70, height: 40, origin: 'China', productName: 'label' };
+  const { jobs, pages } = makeJobs(records, false);
+  assert(estimatePdfBytes(template, jobs, pages, 300) > PDF_PREFLIGHT_BYTES);
+  await assert.rejects(generatePdf({ records, template, dpi: 300 }), /12 MB/);
 });

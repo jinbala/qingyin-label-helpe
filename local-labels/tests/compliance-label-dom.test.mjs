@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { installDom } from './dom-runtime.mjs';
 import { mountLabelApp } from '../src/ui/app.mjs';
 import { pageType, readSelected } from '../src/integration/dom.mjs';
-import { defaultTemplates } from '../src/core/templates.mjs';
+import { defaultTemplates, SETTINGS_SCHEMA } from '../src/core/templates.mjs';
 import { createLabelRenderer, generatePdf, toMonochrome } from '../src/printing/render.mjs';
 import PDFLib from '../vendor/pdf-lib.min.js';
 import { barcodeSvg } from '../src/printing/render.mjs';
+import { designSvg } from '../src/printing/design-svg.mjs';
 import { local7040Template, localRecords } from './fixtures/local-template.mjs';
 import { normalizeLayout } from '../src/core/layout.mjs';
 import { mountLayoutEditor } from '../src/ui/layout-editor.mjs';
@@ -368,4 +369,100 @@ test('真实设计器保存经扩展通信持久化，旧页面保存后重新�
     window.dispatchEvent(new window.Event('pagehide'));
     if (previousChrome) globalThis.chrome = previousChrome; else delete globalThis.chrome;
   }
+});
+
+test('CODE128 非法或空内容给出中文错误，而不是 undefined', () => {
+  const code = { id: 'code', type: 'code', name: '条码', x: 2, y: 2, w: 30, h: 8, rotation: 0, visible: true, locked: false, text: '{{skuSpec}}', fontSize: 2, fontFamily: 'Arial', bold: false, align: 'left', lineHeight: 1.2 };
+  const template = { schema: 'qingyin-design/v1', kind: 'design', id: 'code-test', name: '条码测试', width: 70, height: 40, origin: 'China', elements: [code] };
+  const check = (record, expected) => assert.throws(
+    () => designSvg(template, record, barcodeSvg),
+    error => error instanceof Error && expected.test(error.message),
+  );
+  check({ productSkuId: '1', skuSpec: '黑色' }, /CODE128/);
+  check({ productSkuId: '1' }, /CODE128/);
+  assert.throws(() => designSvg({ ...template, elements: [{ ...code, text: '' }] }, {}, barcodeSvg), error => error instanceof Error && /CODE128/.test(error.message));
+});
+
+test('上方文字在 150% 缩放时不裁切、不贴到画布边缘', async () => {
+  const simple = { schema: 'qingyin-template/v1', kind: 'simple', id: 'scaled', name: '缩放', width: 60, height: 40, origin: 'China',
+    productName: '这是一段很长的商品名称用于测试自动换行是否考虑内容缩放比例这是第二段同样很长的文字内容用来占满整行宽度确保在百分之一百时刚好换行', manufacturer: '', address: '', responsiblePerson: '', contact: '', warning: '' };
+  const record = { productSkuId: '9000000000001', productSkcId: '800000000001', labelCode: '53711398047', skuSpec: 'Black-L', skcSpec: 'Cotton', sourceId: 'S1' };
+  for (const scale of [100, 150]) {
+    const render = await createLabelRenderer({ ...simple, layout: normalizeLayout({ parts: { content: { scale } } }, 60, 40) });
+    const canvas = await render(record, { dpi: 150 });
+    const { data } = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height);
+    let rightmost = -1;
+    for (let y = 0; y < canvas.height; y++) for (let x = canvas.width - 1; x >= 0; x--) {
+      if (data[(y * canvas.width + x) * 4] < 128) { rightmost = Math.max(rightmost, x); break; }
+    }
+    assert(rightmost < canvas.width - 1, `scale ${scale} 的文字不得贴到最后一列`);
+    canvas.width = 1;
+  }
+});
+
+test('损坏的模板或位置只被跳过，后续保存不会删除其他模板', async () => {
+  const valid = { schema: 'qingyin-template/v1', kind: 'simple', id: 'valid', name: '有效模板', width: 70, height: 40, productName: '商品 {{sku}}' };
+  const broken = { schema: 'qingyin-template/v1', kind: 'simple', id: 'broken', name: '坏模板', width: 70, height: 40, productName: 'x'.repeat(201) };
+  const seed = { schema: SETTINGS_SCHEMA, templates: [...defaultTemplates(), valid, broken], selected: 'valid',
+    layouts: { valid: { version: 1, parts: { unknown: { x: 1, y: 0, scale: 100 } } } } };
+  const data = { qingyinLabelSettings: structuredClone(seed) }; let writes = 0;
+  const storage = {
+    async get(keys) { return structuredClone(Object.fromEntries(keys.map(key => [key, data[key]]))); },
+    async set(values) { writes++; Object.assign(data, structuredClone(values)); },
+  };
+  const store = createSettingsStore(storage), previousChrome = globalThis.chrome;
+  globalThis.chrome = { runtime: { sendMessage: async packet => ({ ok: true, settings: await store(packet.operation, packet.patch) }) } };
+  try {
+    window.dispatchEvent(new window.Event('pagehide'));
+    document.querySelector('#qingyin-label-helper-root')?.remove();
+    await mountLabelApp(await createExtensionServices(), './style.css');
+    const root = document.querySelector('#qingyin-label-helper-root').shadowRoot;
+    assert.match(root.querySelector('#notice').textContent, /无法读取/);
+    assert.equal(root.querySelector('#templates').children.length, 3, '默认模板 + 一个有效模板');
+    const card = [...root.querySelector('#templates').children].find(node => node.textContent.includes('有效模板'));
+    assert(card); card.click();
+    await until(() => writes > 0);
+    const saved = data.qingyinLabelSettings;
+    assert(saved.templates.some(template => template.id === 'valid'));
+    assert(saved.templates.some(template => template.id === 'broken'), '坏模板必须保留在存储中');
+    assert(saved.templates.some(template => template.id === 'local-default'), '默认模板不得被当作删除');
+    assert(saved.layouts.valid, '无法解析的位置也必须保留在存储中');
+  } finally {
+    window.dispatchEvent(new window.Event('pagehide'));
+    document.querySelector('#qingyin-label-helper-root')?.remove();
+    if (previousChrome) globalThis.chrome = previousChrome; else delete globalThis.chrome;
+  }
+});
+
+test('修改产地会在防抖后保存到当前模板', async () => {
+  const seed = { schema: SETTINGS_SCHEMA, templates: defaultTemplates(), selected: 'local-default', layouts: {} };
+  const data = { qingyinLabelSettings: structuredClone(seed) };
+  const storage = {
+    async get(keys) { return structuredClone(Object.fromEntries(keys.map(key => [key, data[key]]))); },
+    async set(values) { Object.assign(data, structuredClone(values)); },
+  };
+  const store = createSettingsStore(storage), previousChrome = globalThis.chrome;
+  globalThis.chrome = { runtime: { sendMessage: async packet => ({ ok: true, settings: await store(packet.operation, packet.patch) }) } };
+  try {
+    window.dispatchEvent(new window.Event('pagehide'));
+    document.querySelector('#qingyin-label-helper-root')?.remove();
+    await mountLabelApp(await createExtensionServices(), './style.css');
+    const root = document.querySelector('#qingyin-label-helper-root').shadowRoot, input = root.querySelector('#origin');
+    assert.equal(input.value, 'China');
+    input.value = 'Vietnam'; input.dispatchEvent(new window.Event('input'));
+    await until(() => data.qingyinLabelSettings.templates.find(template => template.id === 'local-default')?.origin === 'Vietnam');
+    assert.equal(data.qingyinLabelSettings.templates.find(template => template.id === 'local-7040').origin, 'China');
+  } finally {
+    window.dispatchEvent(new window.Event('pagehide'));
+    document.querySelector('#qingyin-label-helper-root')?.remove();
+    if (previousChrome) globalThis.chrome = previousChrome; else delete globalThis.chrome;
+  }
+});
+
+test('重复标签的 PDF 只上报少量进度事件', async () => {
+  const events = [];
+  const result = await generatePdf({ records: [{ ...localRecords[0], quantity: 300 }], template: local7040Template, dpi: 300, onProgress: event => events.push(event) });
+  assert.equal(result.pages, 300);
+  assert(events.length <= 5, `进度事件应节流，实际 ${events.length} 次`);
+  assert.equal(events.at(-1).percent, 100);
 });
