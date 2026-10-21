@@ -1,5 +1,6 @@
 import { applySettingsPatch } from '../core/settings.mjs';
 import { SETTINGS_SCHEMA } from '../core/templates.mjs';
+import { STORAGE_BUDGET_BYTES, STORAGE_LIMIT_LABEL, settingsPayloadBytes, largestTemplates, formatMegabytes } from '../core/footprint.mjs';
 
 export function createSettingsStore(storage) {
   let pending = Promise.resolve();
@@ -17,6 +18,13 @@ export function createSettingsStore(storage) {
       if (operation === 'load') return { ...settings, ...(migrationNotice ? { migrationNotice } : {}) };
       if (operation !== 'save') throw new Error('不支持的模板存储操作。');
       const next = { ...applySettingsPatch(settings, patch), writeId: crypto.randomUUID() };
+      // Refuse before writing: the browser would otherwise reject the save with
+      // an opaque quota error after the user has already spent time editing.
+      const footprint = settingsPayloadBytes(next);
+      if (footprint > STORAGE_BUDGET_BYTES) {
+        const largest = largestTemplates(next).map(item => `${item.name}（${formatMegabytes(item.bytes)}）`).join('、');
+        throw new Error(`本机模板存储空间不足：模板与图片合计约 ${formatMegabytes(footprint)}，浏览器上限约 ${STORAGE_LIMIT_LABEL}。请先导出备份，再删除不用的模板或缩小图片${largest ? `；占用最大：${largest}` : ''}。`);
+      }
       try { await storage.set({ qingyinLabelSettings: next }); }
       catch (error) {
         if (/quota|QUOTA_BYTES/i.test(error.message)) throw new Error('本机模板存储空间不足，请导出备份后删除不用的模板或缩小图片。');

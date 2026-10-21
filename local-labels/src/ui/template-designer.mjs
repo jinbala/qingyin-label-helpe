@@ -46,7 +46,9 @@ export function mountTemplateDesigner({ root, mainPanel, onSave, onClose = () =>
   function historyButtons() { $('[data-action=undo]').disabled = !undo.length; $('[data-action=redo]').disabled = !redo.length; }
   function mutate(action) {
     if (saving) return false; finishGesture(); const before = snapshot();
-    try { action(); localTemplate(draft); commit(before); paintAll(); return true; }
+    // Editing cannot change an embedded image payload, so only its prefix is
+    // rechecked here; the full pattern runs when the template is saved.
+    try { action(); localTemplate(draft, { trustImages: true }); commit(before); paintAll(); return true; }
     catch (error) { draft = clone(before.draft); selected = before.selected; paintAll(); setStatus(error.message, true); return false; }
   }
   function zoom() {

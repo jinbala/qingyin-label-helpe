@@ -2,6 +2,9 @@ import { SETTINGS_SCHEMA, localTemplate } from './templates.mjs';
 import { normalizeLayout } from './layout.mjs';
 
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
+// A template that kept its object identity cannot have changed, so the costly
+// JSON comparison is only needed for the few objects a page actually replaced.
+const unchanged = (left, right) => left === right || same(left, right);
 const keyed = values => new Map((values || []).map(value => [value.id, value]));
 
 export function createSettingsClient(request) {
@@ -27,12 +30,12 @@ export function settingsPatch(previous = {}, next = {}) {
   const patch = {};
   if (Array.isArray(next.templates)) {
     const before = keyed(previous.templates), after = keyed(next.templates);
-    patch.templates = [...after.values()].filter(template => !same(before.get(template.id), template));
+    patch.templates = [...after.values()].filter(template => !unchanged(before.get(template.id), template));
     patch.deletedTemplates = [...before.keys()].filter(id => !after.has(id));
   }
   if (next.layouts) {
     const before = new Map(Object.entries(previous.layouts || {})), after = new Map(Object.entries(next.layouts));
-    patch.layouts = Object.fromEntries([...after].filter(([id, layout]) => !same(before.get(id), layout)));
+    patch.layouts = Object.fromEntries([...after].filter(([id, layout]) => !unchanged(before.get(id), layout)));
     patch.deletedLayouts = [...before.keys()].filter(id => !after.has(id));
   }
   if (next.selected !== undefined && next.selected !== previous.selected) patch.selected = next.selected;

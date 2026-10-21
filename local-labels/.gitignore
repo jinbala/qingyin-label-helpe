@@ -1,4 +1,5 @@
 node_modules/
+/coverage/
 /dist/
 /docs/validation/*
 !/docs/validation/验证说明.md

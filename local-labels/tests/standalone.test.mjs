@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { createExtensionServices } from '../src/integration/bridge.mjs';
+import { encodeBase64, decodeBase64 } from '../src/integration/base64.mjs';
 import { OPEN_PANEL, OPEN_PDF, SETTINGS_REQUEST } from '../src/integration/extension-api.mjs';
 import { SETTINGS_SCHEMA } from '../src/core/templates.mjs';
 import { auditIndependence } from '../scripts/independence-audit.mjs';
@@ -68,6 +69,28 @@ test('旧设置只备份一次并停用；新模板存储和 PDF 使用自己的
   } finally { delete globalThis.chrome; }
 });
 
+test('扩展重新加载或后台失联时提示刷新页面，其他错误原样保留', async () => {
+  const failing = async () => { throw new Error('Extension context invalidated.'); };
+  globalThis.chrome = { runtime: { sendMessage: failing } };
+  try {
+    const service = await createExtensionServices();
+    await assert.rejects(service.loadSettings(), /请刷新本页面（F5）后重试/);
+    await assert.rejects(service.openPdf(new TextEncoder().encode('%PDF-1.7'), 'test.pdf'), /请刷新本页面（F5）后重试/);
+    globalThis.chrome.runtime.sendMessage = async () => { throw new Error('页面脚本错误'); };
+    await assert.rejects(service.openPdf(new TextEncoder().encode('%PDF-1.7'), 'test.pdf'), /页面脚本错误/);
+  } finally { delete globalThis.chrome; }
+});
+
+test('PDF 以分块 base64 往返，分块边界与补齐都不会改动字节', () => {
+  for (const size of [0, 1, 2, 3, 8192, 24575, 24576, 24577, 100000]) {
+    const bytes = new Uint8Array(size);
+    for (let index = 0; index < size; index++) bytes[index] = (index * 37 + 11) & 0xff;
+    const text = encodeBase64(bytes);
+    assert.equal(text, Buffer.from(bytes).toString('base64'), `编码结果与 Buffer 一致：${size}`);
+    assert.deepEqual([...decodeBase64(text)], [...bytes], `往返字节一致：${size}`);
+  }
+});
+
 test('项目复制到无原插件的临时目录后仍能独立校验、构建和解包', async () => {
   const temporary = await mkdtemp(path.join(tmpdir(), 'qingyin-independent-'));
   const copy = path.join(temporary, 'project');
@@ -81,7 +104,7 @@ test('项目复制到无原插件的临时目录后仍能独立校验、构建�
     const result = spawnSync(process.execPath, [path.join(copy, 'scripts/build.mjs')], { cwd: temporary, encoding: 'utf8', windowsHide: true });
     assert.equal(result.status, 0, result.stderr);
     const manifest = JSON.parse(await readFile(path.join(copy, 'dist/extension/manifest.json'), 'utf8'));
-    assert.equal(manifest.version, '1.4.7');
+    assert.equal(manifest.version, '1.4.8');
     assert.equal((await readFile(path.join(copy, 'dist/qingyin-label-helper.zip'))).subarray(0, 2).toString(), 'PK');
   } finally {
     const resolved = path.resolve(temporary), parent = path.resolve(tmpdir());

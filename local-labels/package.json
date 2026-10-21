@@ -1,0 +1,18 @@
+{
+  "name": "qingyin-label-helper",
+  "private": true,
+  "description": "轻印标签助手：TEMU 商品标签批量生成、模板管理与本地 PDF 打印（Chrome MV3 扩展，零构建）",
+  "type": "commonjs",
+  "scripts": {
+    "check": "node scripts/check.mjs",
+    "test": "npm --prefix tests test",
+    "coverage": "c8 --all --include=\"src/**\" --reporter=text-summary --reporter=text node --test tests/compliance-label.test.mjs tests/compliance-label-dom.test.mjs tests/page-api.test.mjs tests/layout.test.mjs tests/preview-scheduler.test.mjs tests/preview-quality.test.mjs tests/settings-store.test.mjs tests/template-backup.test.mjs tests/template-designer.test.mjs tests/barcode-margin.test.mjs tests/standalone.test.mjs",
+    "build": "node scripts/build.mjs",
+    "format": "prettier --write \"src/**/*.{mjs,css,html}\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"src/**/*.{mjs,css,html}\" \"scripts/**/*.mjs\""
+  },
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "prettier": "^3.9.10"
+  }
+}

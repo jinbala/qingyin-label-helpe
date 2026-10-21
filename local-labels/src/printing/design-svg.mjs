@@ -1,5 +1,6 @@
 import { designVariables, DESIGN_SAMPLE } from '../core/design.mjs';
 import { normalizeLayout } from '../core/layout.mjs';
+import { fitLines } from './text-fit.mjs';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[char]);
 const metrics = new WeakMap();
@@ -7,16 +8,7 @@ function textLines(element, text) {
   if (!metrics.has(document)) metrics.set(document, document.createElement('canvas').getContext('2d'));
   const context = metrics.get(document);
   context.font = `${element.bold ? 'bold ' : ''}${element.fontSize * 10}px "${element.fontFamily}"`;
-  const lines = [];
-  for (const paragraph of text.split('\n')) {
-    let line = '';
-    for (const char of paragraph) {
-      if (line && context.measureText(line + char).width > element.w * 10) { lines.push(line); line = ''; }
-      line += char;
-    }
-    lines.push(line);
-  }
-  return lines;
+  return fitLines(context, text, element.w * 10);
 }
 
 export function elementMarkup(element, record = DESIGN_SAMPLE, origin = 'China', { barcodeSvg, layout } = {}) {

@@ -57,6 +57,7 @@ export function makeJobs(records, separators, batchSeparators = false) {
       throw new Error(`SKU ${record.productSkuId || index + 1} 缺少有效 CODE128 条码。`);
     }
     const count = quantity(record.quantity);
+    if (pages + count > MAX_PAGES) throw new Error(`合计超过 ${MAX_PAGES} 张，请减少数量或分批打印。`);
     jobs.push({ record, quantity: count, separator: false });
     pages += count;
     const next = records[index + 1];
@@ -64,22 +65,22 @@ export function makeJobs(records, separators, batchSeparators = false) {
     const differentBatch = next && (record.batchRank ?? 0) !== (next.batchRank ?? 0);
     // Both options share one separator page when SKU and 发货批次 change together.
     if (next && (separators && differentSku || batchSeparators && differentBatch)) {
+      if (pages + 1 > MAX_PAGES) throw new Error(`合计超过 ${MAX_PAGES} 张，请减少数量或分批打印。`);
       jobs.push({ record: null, quantity: 1, separator: true });
       pages++;
     }
-    if (pages > MAX_PAGES) throw new Error(`合计超过 ${MAX_PAGES} 张，请减少数量或分批打印。`);
   }
   return { jobs, pages };
 }
 
-export function validateTemplate(template) {
+export function validateTemplate(template, options = {}) {
   if (!template || typeof template !== 'object') throw new Error('模板格式无效。');
   const width = Number(template.width), height = Number(template.height);
   if (![width, height].every(n => Number.isFinite(n) && n >= 15 && n <= 210)) {
     throw new Error('标签宽高必须在 15–210 mm 之间。');
   }
   if (width * height > 210 * 150) throw new Error('模板面积过大，请使用标签纸尺寸。');
-  if (template.kind === 'design') return validateDesign(template, width, height);
+  if (template.kind === 'design') return validateDesign(template, width, height, options);
   if (template.kind && template.kind !== 'simple' || template.content !== undefined || template.objects !== undefined) throw new Error('只支持轻印本地文字模板。');
   const result = { width, height, kind: 'simple' };
   // Explicit fields keep imported data inert and exclude remote image or script properties.

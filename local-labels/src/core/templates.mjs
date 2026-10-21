@@ -4,11 +4,11 @@ import { DESIGN_SCHEMA } from './design.mjs';
 export const TEMPLATE_SCHEMA = 'qingyin-template/v1';
 export const SETTINGS_SCHEMA = 'qingyin-settings/v2';
 
-export function localTemplate(value) {
+export function localTemplate(value, options = {}) {
   if (!(value?.schema === TEMPLATE_SCHEMA && value.kind === 'simple' || value?.schema === DESIGN_SCHEMA && value.kind === 'design')) {
     throw new Error('只支持轻印本地模板 JSON，请新建模板并填写自己的标签内容。');
   }
-  return validateTemplate(value);
+  return validateTemplate(value, options);
 }
 
 export function defaultTemplates() {

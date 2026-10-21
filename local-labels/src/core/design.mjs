@@ -5,13 +5,18 @@ export const DESIGN_SCHEMA = 'qingyin-design/v1';
 export const ELEMENT_TYPES = { text: '文字', barcode: '商品条码', code: 'CODE128', line: '线段', rect: '矩形', ellipse: '圆形', image: '图片', grid: '表格' };
 export const DESIGN_SAMPLE = { productSkuId: '900000000001', productSkcId: '800000000001', labelCode: '53711398047', skcSpec: 'Black', skuSpec: '2XL', sourceId: 'DEMO001' };
 export const roundMm = value => Math.round(value * 100) / 100;
+// The full pattern is only worth its cost when untrusted JSON enters the
+// library. During editing the payload cannot change, so a prefix check keeps
+// every keystroke and pointer release cheap.
+const IMAGE_SRC = /^data:image\/(png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i;
+const IMAGE_PREFIX = /^data:image\/(png|jpeg|webp);base64,/i;
 const numeric = (value, fallback, min, max) => {
   const result = Number(value ?? fallback);
   if (!Number.isFinite(result) || result < min || result > max) throw new Error('元素的位置、尺寸或样式超出允许范围。');
   return result;
 };
 
-export function validateDesign(template, width = Number(template.width), height = Number(template.height)) {
+export function validateDesign(template, width = Number(template.width), height = Number(template.height), { trustImages = false } = {}) {
   if (template.schema !== DESIGN_SCHEMA || !Array.isArray(template.elements) || template.elements.length > 120) throw new Error('可视化模板格式无效，最多添加 120 个元素。');
   if (typeof template.name !== 'string' || !template.name.trim() || template.name.length > 80) throw new Error('请填写 1–80 字的模板名称。');
   const seen = new Set(); let imageBytes = 0;
@@ -39,7 +44,8 @@ export function validateDesign(template, width = Number(template.width), height 
       if (value.type === 'grid') { element.rows = numeric(value.rows, 3, 1, 20); element.cols = numeric(value.cols, 3, 1, 20); if (!Number.isInteger(element.rows) || !Number.isInteger(element.cols)) throw new Error('表格行列必须为整数。'); }
     }
     if (value.type === 'image') {
-      if (typeof value.src !== 'string' || !/^data:image\/(png|jpeg|webp);base64,[a-z0-9+/]+={0,2}$/i.test(value.src) || value.src.length > 2800000) throw new Error('图片必须是本机导入的 PNG/JPEG/WebP，每张不超过 2 MB。');
+      const pattern = trustImages ? IMAGE_PREFIX : IMAGE_SRC;
+      if (typeof value.src !== 'string' || value.src.length > 2800000 || !pattern.test(value.src)) throw new Error('图片必须是本机导入的 PNG/JPEG/WebP，每张不超过 2 MB。');
       imageBytes += value.src.length;
       element.src = value.src;
     }

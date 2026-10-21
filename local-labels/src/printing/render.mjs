@@ -1,10 +1,17 @@
 import { makeJobs, validateTemplate } from '../core/core.mjs';
 import { normalizeLayout, isDefaultAdjustment } from '../core/layout.mjs';
+import { designVariables } from '../core/design.mjs';
 import { designSvg } from './design-svg.mjs';
+import { fitLines } from './text-fit.mjs';
 import { defaultBarcodeBox, BARCODE_FRAME_MM } from '../core/label-geometry.mjs';
 
 const MM_TO_PT = 72 / 25.4;
 const FONT = 'Arial, "Microsoft YaHei", "Noto Sans SC", sans-serif';
+// Our barcode layout uses a fixed 700 x 185 coordinate space: a heading row,
+// a CODE128 slot with ten-module quiet zones, and a footer row. Callers size
+// the region from these constants instead of rendering it once to measure it.
+export const BARCODE_VIEW_WIDTH = 700;
+export const BARCODE_VIEW_HEIGHT = 185;
 const yieldFrame = () => new Promise(resolve => setTimeout(resolve, 0));
 const fontReadiness = new WeakMap();
 function waitForFonts() {
@@ -32,11 +39,6 @@ function imageFromUrl(url, signal) {
   });
 }
 
-function variables(text, record) {
-  const values = { sku: record.productSkuId, skc: record.productSkcId, skuSpec: record.skuSpec, skcSpec: record.skcSpec, sourceId: record.sourceId };
-  return String(text || '').replace(/\{\{(sku|skc|skuSpec|skcSpec|sourceId)\}\}/g, (_, key) => values[key] || '');
-}
-
 export function barcodeSvg(record, origin, JsBarcode = globalThis.JsBarcode, { layout, unitMm = 25.4 / 300, unitMmY = unitMm, padding = 0 } = {}) {
   const adjustments = normalizeLayout(layout).parts;
   const transform = (part, x, y) => {
@@ -45,7 +47,7 @@ export function barcodeSvg(record, origin, JsBarcode = globalThis.JsBarcode, { l
   };
   // Our layout uses a fixed 700 x 185 coordinate space: a heading row,
   // a CODE128 slot with ten-module quiet zones, and a footer row.
-  const width = 700, height = 185, barsTop = 46, barsHeight = 106;
+  const width = BARCODE_VIEW_WIDTH, height = BARCODE_VIEW_HEIGHT, barsTop = 46, barsHeight = 106;
   const barcode = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   JsBarcode(barcode, String(record.labelCode), { format: 'CODE128', width: 1, height: barsHeight, margin: 0, displayValue: false });
   const bars = barcode.querySelector('g');
@@ -74,19 +76,6 @@ export function barcodeSvg(record, origin, JsBarcode = globalThis.JsBarcode, { l
     <g data-role="bars"${transform('bars', barsLeft, barsTop)}><g transform="translate(${barsLeft} ${barsTop}) scale(${moduleScale} 1)">${new XMLSerializer().serializeToString(group)}</g></g>
     ${text(leftTop, 14, 33, 'lt', 220)}${text(centerTop, 350, 33, 'tc', 250, 'middle')}${text(rightTop, 686, 33, 'rt', 90, 'end')}
     ${text(leftBottom, 14, 175, 'lb', 320)}${text(rightBottom, 686, 175, 'rb', 300, 'end')}</svg>`;
-}
-
-function wrapText(context, text, maxWidth) {
-  const lines = [];
-  for (const paragraph of String(text).split('\n')) {
-    let line = '';
-    for (const char of paragraph) {
-      if (line && context.measureText(line + char).width > maxWidth) { lines.push(line); line = ''; }
-      line += char;
-    }
-    lines.push(line);
-  }
-  return lines;
 }
 
 // The separator sheet uses the paper size of the chosen template: a frame,
@@ -127,12 +116,12 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   const margin = 2 / 25.4 * dpi, usableWidth = canvas.width - margin * 2;
   const fields = [template.productName, template.manufacturer && `Manufacturer: ${template.manufacturer}`,
     template.address, template.responsiblePerson && `Responsible person: ${template.responsiblePerson}`,
-    template.contact, template.warning].filter(Boolean).map(text => variables(text, record));
+    template.contact, template.warning].filter(Boolean).map(text => designVariables(text, record, template.origin));
   const textHeight = canvas.height * 0.48 - margin;
   let size = Math.max(12, dpi / 15), lines;
   do {
     context.font = `${size}px ${FONT}`;
-    lines = fields.flatMap(text => wrapText(context, text, usableWidth));
+    lines = fields.flatMap(text => fitLines(context, text, usableWidth));
     if (lines.length * size * 1.35 <= textHeight) break;
     size -= dpi / 150;
   } while (size >= dpi / 28);
@@ -142,11 +131,10 @@ async function renderSimple(template, record, { dpi, separator, signal }) {
   context.translate(content.x / 25.4 * dpi, content.y / 25.4 * dpi); context.scale(content.scale / 100, content.scale / 100);
   lines.forEach((line, index) => context.fillText(line, margin, margin + index * size * 1.35));
   context.restore();
-  const initialSvg = barcodeSvg(record, template.origin);
-  const dimensions = new DOMParser().parseFromString(initialSvg, 'image/svg+xml').documentElement;
-  const naturalWidth = Number(dimensions.getAttribute('width')), naturalHeight = Number(dimensions.getAttribute('height'));
+  // The region occupies the fixed 700 x 185 barcode coordinate space, so its
+  // scale comes from constants rather than from a throwaway measuring render.
   const box = defaultBarcodeBox(template.width, template.height);
-  const scale = Math.min(box.w / naturalWidth, box.h / naturalHeight) * dpi / 25.4;
+  const scale = Math.min(box.w / BARCODE_VIEW_WIDTH, box.h / BARCODE_VIEW_HEIGHT) * dpi / 25.4;
   const unitMm = scale * 25.4 / dpi;
   const svg = barcodeSvg(record, template.origin, globalThis.JsBarcode, { layout, unitMm });
   // Rasterize vectors on the paper's fixed pixel grid. Extra space for moved
@@ -179,14 +167,14 @@ async function renderDesign(template, record, config, images) {
   };
   // Composite raster images directly, preserving their order between SVG runs.
   // This avoids depending on nested-image support in different SVG decoders.
+  const content = normalizeLayout(template.layout, template.width, template.height).parts.content;
   let run = [];
   for (const element of template.elements) {
     if (!element.visible) continue;
     if (element.type !== 'image') { run.push(element); continue; }
     await paintVectors(run); run = [];
     const image = images.get(element.src), scale = Math.min(element.w / image.naturalWidth, element.h / image.naturalHeight);
-    const part = normalizeLayout(template.layout, template.width, template.height).parts.content;
-    context.save(); context.scale(config.dpi / 25.4, config.dpi / 25.4); context.translate(part.x, part.y); context.scale(part.scale / 100, part.scale / 100);
+    context.save(); context.scale(config.dpi / 25.4, config.dpi / 25.4); context.translate(content.x, content.y); context.scale(content.scale / 100, content.scale / 100);
     context.translate(element.x + element.w / 2, element.y + element.h / 2); context.rotate(element.rotation * Math.PI / 180);
     context.drawImage(image, -image.naturalWidth * scale / 2, -image.naturalHeight * scale / 2, image.naturalWidth * scale, image.naturalHeight * scale); context.restore();
   }
@@ -217,6 +205,7 @@ export async function createLabelRenderer(template, { signal, cacheLabelBase = f
     const localParts = { ...layout.parts, label: { x: 0, y: 0, scale: 100 } };
     const key = cacheLabelBase ? JSON.stringify([record, config.dpi, Boolean(config.separator), localParts]) : null;
     let source = key ? bases.get(key) : undefined;
+    if (source) { bases.delete(key); bases.set(key, source); } // refresh recency for the eviction order
     if (!source) {
       source = await (template.kind === 'design' ? renderDesign(effective, record, config, images) : renderSimple(effective, record, config));
       config.signal?.throwIfAborted();
@@ -268,7 +257,14 @@ export async function generatePdf({ records, template, separators = false, batch
   const pdf = await globalThis.PDFLib.PDFDocument.create();
   pdf.setTitle('合规标签'); pdf.setCreator('轻印标签助手');
   const cache = new Map();
-  let completed = 0;
+  let completed = 0, lastYield = Date.now();
+  // Yield on a time budget instead of once per job: a timer round trip costs up
+  // to 4 ms in a browser once nesting kicks in, which adds up over large runs.
+  const breathe = async () => {
+    if (Date.now() - lastYield < 8) return;
+    signal?.throwIfAborted();
+    await yieldFrame(); lastYield = Date.now();
+  };
   for (const job of jobs) {
     signal?.throwIfAborted();
     const { record } = job;
@@ -281,10 +277,10 @@ export async function generatePdf({ records, template, separators = false, batch
     for (let i = 0; i < job.quantity; i++) {
       appendImagePage(pdf, cache.get(key), template.width, template.height);
       completed++;
-      if (completed % 50 === 0) { signal?.throwIfAborted(); await yieldFrame(); }
+      if (completed % 50 === 0) await breathe();
     }
     onProgress({ percent: Math.round(completed / pages * 95), completed, pages });
-    await yieldFrame();
+    await breathe();
   }
   signal?.throwIfAborted();
   const bytes = await pdf.save();

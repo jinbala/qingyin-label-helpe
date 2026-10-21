@@ -43,20 +43,35 @@ function deliveryRowIds(row) {
   return [...ids];
 }
 
-function readRowIds(row, type) {
+function skuColumnIndex(row) {
+  const table = row.closest('table');
+  const headers = [...(table ? table.querySelectorAll('thead th') : document.querySelectorAll('#root th'))];
+  return headers.findIndex(header => /\bSKU\b/i.test(header.textContent) && !/\bSKC\b/i.test(header.textContent));
+}
+
+// Resolved once per read: selecting a hundred rows must not rescan the header a hundred times.
+function skuColumnReader(root) {
+  const cache = new Map();
+  return row => {
+    const key = row.closest('table') || root;
+    if (!cache.has(key)) cache.set(key, skuColumnIndex(row));
+    return cache.get(key);
+  };
+}
+
+function readRowIds(row, type, column) {
   if (type === 'delivery') {
     const ids = deliveryRowIds(row);
     if (ids.length) return ids;
   }
-  return [readRowId(row, type)];
+  return [readRowId(row, type, column)];
 }
 
-function readRowId(row, type) {
+function readRowId(row, type, column) {
   if (type === 'sku') {
-    const headers = [...(row.closest('table')?.querySelectorAll('thead th') || document.querySelectorAll('#root th'))];
-    const column = headers.findIndex(header => /\bSKU\b/i.test(header.textContent) && !/\bSKC\b/i.test(header.textContent));
-    if (column < 0) throw new Error('找不到 SKU 列，请使用手动编号输入。');
-    const cell = row.querySelectorAll('td')[column];
+    const index = column === undefined ? skuColumnIndex(row) : column;
+    if (index < 0) throw new Error('找不到 SKU 列，请使用手动编号输入。');
+    const cell = row.querySelectorAll('td')[index];
     const match = cell?.textContent.match(/\d{4,}/);
     if (!match) throw new Error('勾选行中未找到 SKU ID。');
     return match[0];
@@ -87,7 +102,8 @@ export function readSelected(type, clickOrder = new Map(), root = document) {
   if (!rows.length) throw new Error('请先勾选当前页中的订单或商品，或手动输入编号。');
   // One group per selected row: on the delivery page a row is a whole 发货批次,
   // so the groups let later steps tell batches apart (and separate them).
-  const groups = rows.map(row => readRowIds(row, type));
+  const column = type === 'sku' ? skuColumnReader(root) : undefined;
+  const groups = rows.map(row => readRowIds(row, type, column?.(row)));
   const ids = [...new Set(groups.flat())];
   const selectionOrder = [...ids].sort((a, b) => (clickOrder.get(a) ?? 1e12) - (clickOrder.get(b) ?? 1e12));
   return { ids, selectionOrder, groups };

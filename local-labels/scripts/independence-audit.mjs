@@ -18,7 +18,8 @@ export async function auditIndependence(root) {
         const source = await readFile(file, 'utf8');
         if (banned.test(source)) throw new Error(`Reference dependency found: ${path.relative(root, file)}`);
         for (const match of source.matchAll(/https?:\/\/[^\s'"<>`\\)]+/g)) {
-          const url = new URL(match[0]);
+          let url;
+          try { url = new URL(match[0]); } catch { throw new Error(`无法解析的网址：${path.relative(root, file)} → ${match[0]}`); }
           if (['http://www.w3.org/2000/svg', 'http://www.w3.org/1999/xlink'].includes(url.href)) continue;
           if (url.protocol !== 'https:' || !SELLER_HOSTS.has(url.hostname)) throw new Error(`Non-platform URL: ${path.relative(root, file)}`);
         }

@@ -53,9 +53,10 @@ test('整体微调复用底图，20 次调整仅生成一次条码布局', async
       const canvas = await render(localRecords[0], { dpi: 96, layout: normalizeLayout({ parts: { label: { x: i / 10 } } }) });
       assert(canvas.width > 200); canvas.width = 1;
     }
-    assert.equal(calls, 2);
+    // One encode per label: sizing no longer needs a throwaway measuring render.
+    assert.equal(calls, 1);
     await render(localRecords[0], { dpi: 96, layout: normalizeLayout({ parts: { size: { x: 1 } } }) });
-    assert.equal(calls, 4);
+    assert.equal(calls, 2);
   } finally { globalThis.JsBarcode = original; }
 });
 

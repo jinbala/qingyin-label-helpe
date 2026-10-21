@@ -1,10 +1,26 @@
-import { SELLER_HOSTS } from '../core/core.mjs';
+import { isSellerUrl } from './origins.mjs';
+import { encodeBase64 } from './base64.mjs';
 import { OPEN_PDF, SETTINGS_REQUEST } from './extension-api.mjs';
 import { createSettingsClient } from '../core/settings.mjs';
 
+// Reloading or updating the extension orphans the content scripts already
+// running in open tabs: the page keeps its old script, but the extension
+// context behind chrome.runtime is gone. Chrome then fails every message with
+// "Extension context invalidated." (or a closed port when the worker died).
+// Only reloading the page connects the tab to the new context, so replace the
+// raw English error with that instruction.
+const CONTEXT_LOST = /extension context invalidated|message port closed|could not establish connection|receiving end does not exist/i;
+function contextLostError() {
+  return new Error('扩展已重新加载、更新或后台未响应，当前页面仍在使用旧版本。请刷新本页面（F5）后重试。');
+}
+async function sendToExtension(message) {
+  try { return await chrome.runtime.sendMessage(message); }
+  catch (error) { throw CONTEXT_LOST.test(String(error?.message ?? error)) ? contextLostError() : error; }
+}
+
 export async function createExtensionServices() {
   const settingsRequest = async (operation, patch) => {
-    const response = await chrome.runtime.sendMessage({ type: SETTINGS_REQUEST, operation, ...(patch ? { patch } : {}) });
+    const response = await sendToExtension({ type: SETTINGS_REQUEST, operation, ...(patch ? { patch } : {}) });
     if (!response?.ok) throw new Error(response?.error || '无法访问本机模板存储，请重新加载轻印后刷新页面。');
     return response.settings;
   };
@@ -12,14 +28,14 @@ export async function createExtensionServices() {
     ...createSettingsClient(settingsRequest),
     async request(config) {
       const url = new URL(config.url);
-      if (url.protocol !== 'https:' || !SELLER_HOSTS.has(url.hostname)) throw new Error('不支持的 TEMU 请求地址。');
+      if (url.protocol !== 'https:' || !isSellerUrl(url)) throw new Error('不支持的 TEMU 请求地址。');
       return requestInPage(config);
     },
     async openPdf(bytes, filename) {
-      if (bytes.length > 24 * 1024 * 1024) throw new Error('PDF 超过 24 MB，请减少商品数量或打印分辨率。');
-      let binary = '';
-      for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-      const response = await chrome.runtime.sendMessage({ type: OPEN_PDF, base64: btoa(binary), filename });
+      // The message channel serialises base64, so every extra megabyte costs
+      // roughly 2.7 MB of transient strings on its way to the print tab.
+      if (bytes.length > 12 * 1024 * 1024) throw new Error('PDF 超过 12 MB，请减少商品数量或降低打印分辨率后重新生成。');
+      const response = await sendToExtension({ type: OPEN_PDF, base64: encodeBase64(bytes), filename });
       if (!response?.ok) throw new Error(response?.error || '无法打开 PDF 打印预览。');
     },
     async getMallId() {

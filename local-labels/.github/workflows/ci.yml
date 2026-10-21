@@ -1,0 +1,28 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: 安装测试依赖
+        run: npm --prefix tests ci
+      - name: 运行自动化测试
+        run: npm test
+      - name: 构建并校验独立安装包
+        run: npm run build
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingyin-label-helper
+          path: |
+            dist/qingyin-label-helper.zip
+            dist/extension/**
+          if-no-files-found: error

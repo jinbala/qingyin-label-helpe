@@ -2,8 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createSettingsStore } from '../src/printing/settings-store.mjs';
 import { createSettingsClient, settingsPatch } from '../src/core/settings.mjs';
-import { defaultTemplates, SETTINGS_SCHEMA } from '../src/core/templates.mjs';
-import { createDesign } from '../src/core/design.mjs';
+import { defaultTemplates, SETTINGS_SCHEMA, localTemplate } from '../src/core/templates.mjs';
+import { createDesign, newElement } from '../src/core/design.mjs';
 import { normalizeLayout } from '../src/core/layout.mjs';
 import { SETTINGS_REQUEST } from '../src/integration/extension-api.mjs';
 
@@ -44,6 +44,25 @@ test('写入失败或写后核对失败不能报告成功，失败后可重试�
   storage.discard(false); await client.saveSettings(value);
   const reloaded = await createSettingsClient(createSettingsStore(storage)).loadSettings();
   assert.equal(reloaded.templates.length, 2); assert.equal(reloaded.selected, 'local-default');
+});
+
+test('模板总量超出浏览器配额时在写入前拒绝，并指出占用最大的模板', async () => {
+  const storage = memoryStorage(), store = createSettingsStore(storage), client = createSettingsClient(store);
+  await client.loadSettings();
+  await client.saveSettings(initial());
+  const heavy = (id, label) => {
+    const template = createDesign();
+    template.id = id; template.name = label;
+    const image = (suffix, x) => ({ ...newElement('image'), id: `image-${id}-${suffix}`, x, src: `data:image/png;base64,${'A'.repeat(2_700_000)}` });
+    template.elements.push(image('a', 1), image('b', 10));
+    return localTemplate(template);
+  };
+  const before = storage.data.qingyinLabelSettings.templates.length;
+  await assert.rejects(
+    client.saveSettings({ schema: SETTINGS_SCHEMA, templates: [...defaultTemplates(), heavy('heavy-a', '大图模板 A'), heavy('heavy-b', '大图模板 B')], selected: 'heavy-a', layouts: {} }),
+    error => /存储空间不足/.test(error.message) && /10 MB/.test(error.message) && /占用最大：大图模板/.test(error.message),
+  );
+  assert.equal(storage.data.qingyinLabelSettings.templates.length, before, '拒绝时不写入存储');
 });
 
 test('后台只接受本扩展的商家页面与模拟验证页的模板读写', async () => {
